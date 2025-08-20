@@ -12,8 +12,6 @@ import wandb
 import deepspeed
 import torch
 import torch_npu
-from functools import partial
-from dataset.speech_dataset_large import MultiTaskDynamicBatchDataset,MultiTaskDataset,window_class
 from aispeech_asr_config import ModelConfig, TrainConfig, DataConfig, LogConfig
 from utils.deepspeed_utils import deepspeed_main_wrapper, clear_gpu_cache, setup_environ_flags, train
 from utils.model_utils import get_custom_model_factory
@@ -179,10 +177,8 @@ def main(kwargs: DictConfig):
     # )
     # if not (train_config.enable_fsdp or train_config.enable_ddp) or rank == 0 and train_config.batching_strategy != "dynamic":
     #     logger.info(f"--> Validation Set Length = {len(dataset_val)}")
-    dataset = MultiTaskDataset(dataset_config, tokenizer, "train")
-    dataset_train = MultiTaskDynamicBatchDataset(dataset,partial(window_class,max_frame_length = dataset_config.train_max_frame_length,ds_rate = dataset_config.ds_rate))
-    dataset = MultiTaskDataset(dataset_config, tokenizer, "val")
-    dataset_val = MultiTaskDynamicBatchDataset(dataset,partial(window_class,max_frame_length = dataset_config.eval_max_frame_length,ds_rate = dataset_config.ds_rate))
+    dataset_train = get_preprocessed_dataset(tokenizer, dataset_config, split="train")
+    dataset_val = get_preprocessed_dataset(tokenizer, dataset_config, split="val")
     train_dl_kwargs = get_dataloader_kwargs(train_config, dataset_train, tokenizer, "train")
 
     # Create DataLoaders for the training and validation dataset

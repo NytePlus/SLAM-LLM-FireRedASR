@@ -223,6 +223,7 @@ def train(
                 pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
             else:
                 pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", dynamic_ncols=True)
+
             for step, batch in enumerate(train_dataloader):
                 if train_config.batching_strategy == "dynamic" and deepspeed_join(group_join):
                     break

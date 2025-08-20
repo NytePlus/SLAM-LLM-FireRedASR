@@ -12,7 +12,6 @@ import copy
 from tqdm import tqdm
 import os
 import json
-import random
 import torchaudio
 import random
 import logging
@@ -91,8 +90,12 @@ class MultiTaskDataset(IterableDataset):
                     if len(audio_raw) / self.sample_rate > self.max_audio_length or len(audio_raw) / self.sample_rate < 0.1: 
                         continue
                     input_features, input_feature_length = self.feature_extractor(ark_path)
-                    # print(input_features.shape, input_feature_length)
-                    # exit(1)
+
+                    # feature postprocessing
+                    if self.dataset_config.spec_aug:
+                        spec_aug_conf = self.dataset_config.spec_aug_conf
+                        input_features = self.spec_aug(input_features, **spec_aug_conf)
+
                     prompt = random.choice(self.multitask_prompt_list[task])
                     prompt = self.prompt_template.format(prompt)
                     if task in self.append_info_tasks:
@@ -205,6 +208,38 @@ class MultiTaskDataset(IterableDataset):
                                 for s in samples])
         return result
 
+    def spec_aug(self, x, num_t_mask=2, num_f_mask=2, max_t=50, max_f=10):
+        """ Do spec augmentation
+            Inplace operation
+
+            Args:
+                x: input feature tensor
+                num_t_mask: number of time mask to apply
+                num_f_mask: number of freq mask to apply
+                max_t: max width of time mask
+                max_f: max width of freq mask
+
+            Returns
+                masked feat
+        """
+        assert isinstance(x, torch.Tensor)
+        y = x.clone().detach()
+        max_frames = y.size(0)
+        max_freq = y.size(1)
+        # time mask
+        for i in range(num_t_mask):
+            start = random.randint(0, max_frames - 1)
+            length = random.randint(1, max_t)
+            end = min(max_frames, start + length)
+            y[start:end, :] = 0
+        # freq mask
+        for _ in range(num_f_mask):
+            start = random.randint(0, max_freq - 1)
+            length = random.randint(1, max_f)
+            end = min(max_freq, start + length)
+            y[:, start:end] = 0
+        return y
+
 
 class MultiTaskDynamicBatchDataset(IterableDataset):
     def __init__(self, dataset: IterableDataset, window_class) -> None:
@@ -240,6 +275,9 @@ def window_class(elem,buffer,max_frame_length,ds_rate):
 
 
 def get_speech_dataset(dataset_config, tokenizer, split):
+    if split != "train":
+        dataset_config.spec_aug = False
+        
     dataset = MultiTaskDataset(dataset_config, tokenizer, split)
     if split == "train":
         dataset = MultiTaskDynamicBatchDataset(dataset,partial(window_class,max_frame_length = dataset_config.train_max_frame_length,ds_rate = dataset_config.ds_rate))

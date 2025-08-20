@@ -12,7 +12,7 @@ export ASCEND_LAUNCH_BLOCKING=0
 # run_dir=/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/project/SLAM-LLM-FireRedASR
 # cd $run_dir
 code_dir=.
-dataset=mandarin_long_merge_20-30+simu_rir
+dataset=mandarin_long_merge_20-30
 task=
 train_scp_file_path=./data/${dataset}/${task}/train/
 dev_scp_file_path=./data/${dataset}/${task}/dev/
@@ -29,7 +29,6 @@ freeze_encoder=false
 freeze_llm=true
 # use absolute path
 deepspeed_config=conf/ds_config.json
-
 
 
 # Choose LLM

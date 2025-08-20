@@ -3,7 +3,7 @@
 code_dir=.
 use_peft=true
 eval_max_frame_length=3000
-ckpt_path=exp/20250814-1656-mandarin_long_merge_20-30+simu_rir-loratrue__instruct/aispeech_asr_epoch_1_step_40000
+ckpt_path=exp/20250819-1557-mandarin_long_merge_20-30+simu_rir-loratrue__instruct/aispeech_asr_epoch_1_step_30000
 dataset=test
 task=test_meeting_vad_cuts
 
@@ -16,8 +16,6 @@ llm_dim=3584
 
 decode_log=$ckpt_path/decode_${dataset}_${task}
 deepspeed \
-    --include localhost:0,1,2,3,4,5,6,7 \
-    --master_port 40015 \
     $code_dir/inference_batch_deepspeed.py \
     hydra.run.dir=$ckpt_path \
     ++model_config.llm_path=$llm_path \

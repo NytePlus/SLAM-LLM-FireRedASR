@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict
 from torch.distributed.fsdp import ShardingStrategy
 
 
@@ -97,7 +97,7 @@ class DataConfig:
     dev_scp_file_path: str = ""
     test_scp_file_path: str = ""
     train_split: str = "train"
-    dev_split: str = "dev"
+    dev_split: str = "val"
     test_split:str = "test"
     pad_or_trim: bool = True
     prompt: Optional[str] = None
@@ -114,7 +114,8 @@ class DataConfig:
     normalize: Optional[bool] = field(default=False, metadata={
         "help": "whether input is normalized, used for models such as wavlm"
     })
-
+    spec_aug: bool = True
+    spec_aug_conf: Dict[str, int] = field(default_factory=lambda: {"num_t_mask": 4, "num_f_mask": 4, "max_t": 50, "max_f": 10})
 
 
 @dataclass
