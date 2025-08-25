@@ -12,11 +12,11 @@ import copy
 from tqdm import tqdm
 import os
 import json
-import torchaudio
 import random
 import logging
 import subprocess
 import torchaudio
+import torchaudio.functional as F
 import torchaudio.compliance.kaldi as kaldi
 from model.asr_feat import ASRFeatExtractor
 import logging
@@ -42,6 +42,11 @@ class MultiTaskDataset(IterableDataset):
         print(f"[Prompt] {self.multitask_prompt_list}")
         if split == "train":
             self.data_path = dataset_config.train_scp_file_path
+            if dataset_config.wav_reverb:
+                self.rirs_list = []
+                with open(dataset_config.rirs_path, encoding='utf-8') as fin:
+                    for line in fin:
+                        self.rirs_list.append(line.strip())
         elif split == "val":
             self.data_path = dataset_config.dev_scp_file_path
         elif split == "test":
@@ -85,11 +90,17 @@ class MultiTaskDataset(IterableDataset):
                     key = item["key"]
                     target = item["target"].lower()
                     task = item["task"]
-                    numpy_array = kaldiio.load_mat(ark_path)
-                    audio_raw = numpy_array[1].astype(np.float32) / 32768
+                    sample_rate, wav_np = kaldiio.load_mat(ark_path)
+                    audio_raw = wav_np.astype(np.float32) / 32768
                     if len(audio_raw) / self.sample_rate > self.max_audio_length or len(audio_raw) / self.sample_rate < 0.1: 
                         continue
-                    input_features, input_feature_length = self.feature_extractor(ark_path)
+
+                    if self.dataset_config.wav_reverb:
+                        wav_tensor = torch.from_numpy(wav_np).float().unsqueeze(0)
+                        wav_tensor = self.wav_reverb(wav_tensor, self.dataset_config.reverb_prob)
+                        wav_np = wav_tensor.squeeze(0).numpy()
+
+                    input_features, input_feature_length = self.feature_extractor((sample_rate, wav_np))
 
                     # feature postprocessing
                     if self.dataset_config.spec_aug:
@@ -240,6 +251,25 @@ class MultiTaskDataset(IterableDataset):
             y[:, start:end] = 0
         return y
 
+    def wav_reverb(self, x, p=0.3):
+        assert isinstance(x, torch.Tensor)
+        y = x.clone().detach()
+
+        if random.random() > p:
+            return y
+        
+        y = y / (1 << 15)
+        rir_path = random.choice(self.rirs_list)
+        rir, rir_sr = torchaudio.load(rir_path)
+        rir = rir[0:1, :]
+        rir = rir / torch.linalg.vector_norm(rir, ord=2)
+
+        corrupted = F.fftconvolve(y, rir)
+        T = y.shape[-1]
+        corrupted = corrupted[:, :T]
+
+        return corrupted * (1 << 15)
+
 
 class MultiTaskDynamicBatchDataset(IterableDataset):
     def __init__(self, dataset: IterableDataset, window_class) -> None:
@@ -277,7 +307,7 @@ def window_class(elem,buffer,max_frame_length,ds_rate):
 def get_speech_dataset(dataset_config, tokenizer, split):
     if split != "train":
         dataset_config.spec_aug = False
-        
+        dataset_config.wav_reverb = False
     dataset = MultiTaskDataset(dataset_config, tokenizer, split)
     if split == "train":
         dataset = MultiTaskDynamicBatchDataset(dataset,partial(window_class,max_frame_length = dataset_config.train_max_frame_length,ds_rate = dataset_config.ds_rate))

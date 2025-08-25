@@ -51,6 +51,7 @@ exp/
 logs/
 tmp/
 kernel_meta/
+fusion_result.json
 
 # IDE and Editors
 .vscode/

@@ -13,11 +13,15 @@ class ASRFeatExtractor:
         self.fbank = KaldifeatFbank(num_mel_bins=80, frame_length=25,
             frame_shift=10, dither=0.0)
 
-    def __call__(self, wav_path):
+    def __call__(self, wav):
         # feats = []
         # durs = []
         # for wav_path in wav_paths:
-        sample_rate, wav_np = kaldiio.load_mat(wav_path)
+        if type(wav) is str:
+            sample_rate, wav_np = kaldiio.load_mat(wav)
+        elif type(wav) in [tuple, list] and len(wav) == 2:
+            sample_rate, wav_np = wav
+        assert len(wav_np.shape) == 1
         dur = wav_np.shape[0] / sample_rate
         fbank = self.fbank((sample_rate, wav_np))
         if self.cmvn is not None:

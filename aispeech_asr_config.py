@@ -55,7 +55,7 @@ class TrainConfig:
     context_length:int = 4096
     gradient_accumulation_steps:int = 1
     num_epochs:int = 3
-    num_workers_dataloader:int = 1
+    num_workers_dataloader:int = 4
     warmup_steps:int = 1000
     total_steps:int = 100000
     validation_interval:int = 1000
@@ -116,6 +116,9 @@ class DataConfig:
     })
     spec_aug: bool = True
     spec_aug_conf: Dict[str, int] = field(default_factory=lambda: {"num_t_mask": 4, "num_f_mask": 4, "max_t": 50, "max_f": 10})
+    wav_reverb: bool = True
+    reverb_prob: float = 0.5
+    rirs_path: str = "/aistor/aispeech/hpc_stor01/group/asr/noises_rirs/RIRS_NOISES/simu_rirs.wavlist"
 
 
 @dataclass

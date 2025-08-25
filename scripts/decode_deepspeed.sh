@@ -3,9 +3,9 @@
 code_dir=.
 use_peft=true
 eval_max_frame_length=3000
-ckpt_path=exp/20250819-1557-mandarin_long_merge_20-30+simu_rir-loratrue__instruct/aispeech_asr_epoch_1_step_30000
+ckpt_path=./exp/20250825-1140-mandarin_long_merge_20-30-loratrue__instruct/aispeech_asr_epoch_1_step_10000/
 dataset=test
-task=test_meeting_vad_cuts
+task=test_bgb_A3_far_July18
 
 test_scp_file_path=/aistor/aispeech/hpc_stor01/group/asr/${dataset}/${task}
 
