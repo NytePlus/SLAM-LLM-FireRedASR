@@ -47,6 +47,11 @@ class MultiTaskDataset(IterableDataset):
                 with open(dataset_config.rirs_path, encoding='utf-8') as fin:
                     for line in fin:
                         self.rirs_list.append(line.strip())
+            if dataset_config.add_noise:
+                self.noises_list = []
+                with open(dataset_config.noises_path, encoding="utf8") as fin:
+                    for line in fin:
+                        self.noises_list.append(line.strip())
         elif split == "val":
             self.data_path = dataset_config.dev_scp_file_path
         elif split == "test":
@@ -97,8 +102,13 @@ class MultiTaskDataset(IterableDataset):
 
                     if self.dataset_config.wav_reverb:
                         wav_tensor = torch.from_numpy(wav_np).float().unsqueeze(0)
-                        wav_tensor = self.wav_reverb(wav_tensor, self.dataset_config.reverb_prob)
+                        wav_tensor = self.wav_reverb(wav_tensor, sample_rate, self.dataset_config.reverb_prob)
                         wav_np = wav_tensor.squeeze(0).numpy()
+
+                    if self.dataset_config.add_noise:
+                        wav_tensor = torch.from_numpy(wav_np).float().unsqueeze(0)
+                        wav_tensor = self.add_noise(wav_tensor, sample_rate, self.dataset_config.noise_prob)
+                        wav_np = wav_tensor.squeeze(0).numpy()                       
 
                     input_features, input_feature_length = self.feature_extractor((sample_rate, wav_np))
 
@@ -251,7 +261,7 @@ class MultiTaskDataset(IterableDataset):
             y[:, start:end] = 0
         return y
 
-    def wav_reverb(self, x, p=0.3):
+    def wav_reverb(self, x, sample_rate, p=0.3):
         assert isinstance(x, torch.Tensor)
         y = x.clone().detach()
 
@@ -261,6 +271,7 @@ class MultiTaskDataset(IterableDataset):
         y = y / (1 << 15)
         rir_path = random.choice(self.rirs_list)
         rir, rir_sr = torchaudio.load(rir_path)
+        assert sample_rate == rir_sr
         rir = rir[0:1, :]
         rir = rir / torch.linalg.vector_norm(rir, ord=2)
 
@@ -269,6 +280,40 @@ class MultiTaskDataset(IterableDataset):
         corrupted = corrupted[:, :T]
 
         return corrupted * (1 << 15)
+    
+    def add_noise(self, x, sample_rate, p=0.3):
+        assert isinstance(x, torch.Tensor)
+        y = x.clone().detach()
+
+        if random.random() > p:
+            return y
+        
+        y = y / (1 << 15)
+        noise_path = random.choice(self.noises_list)
+        noise, noise_sr = torchaudio.load(noise_path)
+        assert sample_rate == noise_sr
+        noise = noise[0:1 ,:]
+
+        T_speech = y.shape[1]
+        T_noise = noise.shape[1]
+        # 处理噪声长度与语音长度不一致的情况
+        if T_noise > T_speech:
+            start = random.randint(0, T_noise - T_speech)
+            noise_segment = noise[:, start : start + T_speech]
+        elif T_noise < T_speech:
+            noise_segment = torch.zeros_like(y)
+            start = random.randint(0, T_speech - T_noise)
+            noise_segment[:, start: start + T_noise] = noise
+        else:
+            noise_segment = noise
+
+        # 生成随机 SNR
+        snr_db = random.randint(5, 20)  
+        snr_dbs = torch.tensor([snr_db]) 
+
+        # 添加噪声
+        noisy_speech = F.add_noise(y, noise_segment, snr_dbs)
+        return noisy_speech * (1 << 15)
 
 
 class MultiTaskDynamicBatchDataset(IterableDataset):
@@ -305,14 +350,16 @@ def window_class(elem,buffer,max_frame_length,ds_rate):
 
 
 def get_speech_dataset(dataset_config, tokenizer, split):
+    ds_config = copy.deepcopy(dataset_config)
     if split != "train":
-        dataset_config.spec_aug = False
-        dataset_config.wav_reverb = False
-    dataset = MultiTaskDataset(dataset_config, tokenizer, split)
+        ds_config.spec_aug = False
+        ds_config.wav_reverb = False
+        ds_config.add_noise = False
+    dataset = MultiTaskDataset(ds_config, tokenizer, split)
     if split == "train":
-        dataset = MultiTaskDynamicBatchDataset(dataset,partial(window_class,max_frame_length = dataset_config.train_max_frame_length,ds_rate = dataset_config.ds_rate))
+        dataset = MultiTaskDynamicBatchDataset(dataset,partial(window_class, max_frame_length=ds_config.train_max_frame_length, ds_rate=ds_config.ds_rate))
     else:
-        dataset = MultiTaskDynamicBatchDataset(dataset,partial(window_class,max_frame_length = dataset_config.eval_max_frame_length,ds_rate = dataset_config.ds_rate))
+        dataset = MultiTaskDynamicBatchDataset(dataset,partial(window_class, max_frame_length=ds_config.eval_max_frame_length, ds_rate=ds_config.ds_rate))
     return dataset
 
 
