@@ -1,28 +1,20 @@
 #!/bin/bash
-run_dir=/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/project/SLAM-LLM-FireRedASR
-cd $run_dir
-code_dir=.
-projector=linear
-encoder_name=whisper
-use_peft=true
-use_fp16=false
-eval_max_frame_length=3000
-# ckpt_path=/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/project/SLAM-LLM-FireRedASRSLAM-LLM-ASR/exp/20250509-1623-aishell-1-loratrue_hotword_instruct/aispeech_asr_epoch_1_step_10
-dataset=aishell-2
-task=asr
-target=test
-multitask_prompt_path="/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/data/multiprompt.jsonl"
-test_scp_file_path=/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/data/${dataset}/${task}/${target}/
-# Choose Encoder
 
+code_dir=.
+use_peft=true
+eval_max_frame_length=3000
+ckpt_path=exp/20250829-0037-mandarin_long_merge_20-30-loratrue__instruct/aispeech_asr_epoch_1_step_30000
+dataset=test
+task=test_bgb_A3_far_July18
+
+test_scp_file_path=/aistor/aispeech/hpc_stor01/group/asr/${dataset}/${task}
 
 llm_name="Qwen2-7B-Instruct"
-llm_path=/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/model/Qwen2-7B-Instruct
-llm_dim=3584 
+llm_path=/aistor/aispeech/hpc_stor01/group/asr/model/${llm_name}
+llm_dim=3584
 
-ckpt_path=/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/project/SLAM-LLM-FireRedASR/exp/20250709-2008-aishell-2-loratrue_hotword_instruct/aispeech_asr_epoch_1_step_21000
 
-decode_log=$ckpt_path/decode_${dataset}_${task}_${target}
+decode_log=$ckpt_path/decode_${dataset}_${task}
 python \
     $code_dir/inference_batch.py \
     hydra.run.dir=$ckpt_path \
@@ -39,8 +31,8 @@ python \
     ++train_config.num_workers_dataloader=0 \
     ++train_config.output_dir=$output_dir \
     ++decode_log=$decode_log \
-    ++ckpt_path=$ckpt_path/pytorch_model.bin
+    ++ckpt_path=$ckpt_path/pytorch_model.bin \
+|| exit 1
 
 
-python utils/wenet_compute_cer.py --char=1 -v=1 ${decode_log}_gt ${decode_log}_pred > ${decode_log}_cer
 python utils/wenet_compute_cer.py --char=1 -v=1 ${decode_log}_gt ${decode_log}_pred > ${decode_log}_cer

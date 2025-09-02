@@ -3,11 +3,11 @@
 code_dir=.
 use_peft=true
 eval_max_frame_length=3000
-ckpt_path=./exp/20250825-1140-mandarin_long_merge_20-30-loratrue__instruct/aispeech_asr_epoch_1_step_10000/
+ckpt_path=exp/20250829-0037-mandarin_long_merge_20-30-loratrue__instruct/aispeech_asr_epoch_4_step_40000
 dataset=test
-task=test_bgb_A3_far_July18
+task=test-clean
 
-test_scp_file_path=/aistor/aispeech/hpc_stor01/group/asr/${dataset}/${task}
+test_scp_file_path=/aistor/aispeech/hpc_stor01/group/asr/english/librispeech/asr/${task}
 
 llm_name="Qwen2-7B-Instruct"
 llm_path=/aistor/aispeech/hpc_stor01/group/asr/model/${llm_name}

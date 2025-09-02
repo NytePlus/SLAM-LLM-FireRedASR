@@ -61,15 +61,15 @@ if [[ $use_peft == "true" && -n "$ckpt_path" ]];then
 fi
 
 # debug
-deepspeed \
-     $code_dir/finetune_deepspeed.py \
-     ++train_config.enable_fsdp=false \
-     ++train_config.enable_ddp=true \
-     ++train_config.use_fp16=$use_fp16 \
-     ++deepspeed_config=$deepspeed_config \
-     ${hydra_args}
+# deepspeed \
+#      $code_dir/finetune_deepspeed.py \
+#      ++train_config.enable_fsdp=false \
+#      ++train_config.enable_ddp=true \
+#      ++train_config.use_fp16=$use_fp16 \
+#      ++deepspeed_config=$deepspeed_config \
+#      ${hydra_args}
 
-exit 0
+# exit 0
 
 HOST_FILE="/tmp/"${JobID}                        #生成的hostfile的完整文件名，$JobID调度系统会自动生成
  
