@@ -46,6 +46,13 @@ def setup_encoder(train_config, model_config, **kwargs):
 def setup_encoder_projector(train_config, model_config, **kwargs):
     encoder_projector = Adapter(model_config["encoder_config"]["d_model"],model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
     print_module_size(encoder_projector, "adapter", int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
+
+    if train_config.freeze_projector:
+        for name, param in encoder_projector.named_parameters():
+            param.requires_grad = False
+        encoder_projector.eval()
+        print_module_size(encoder_projector, "adapter", int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
+
     return encoder_projector
 
 
@@ -288,6 +295,8 @@ class slam_model_asr(torch.nn.Module):
         )
 
         return model_outputs
+    
+    
     def _merge_input_ids_with_audio_features(
         self, audio_features, num_audio_tokens, inputs_embeds, input_ids, attention_mask, labels
     ):

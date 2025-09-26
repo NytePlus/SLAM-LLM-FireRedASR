@@ -79,6 +79,7 @@ class TrainConfig:
         "help": "whether to freeze llm when finetuning, should be true when use peft finetuning"
     })
     freeze_encoder:bool = False
+    freeze_projector:bool = False
 
 
 @dataclass

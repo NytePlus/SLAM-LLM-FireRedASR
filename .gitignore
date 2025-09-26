@@ -22,11 +22,14 @@ var/
 wheels/
 *.egg-info/
 .installed.cfg
+
+# Others
 *.orig
 *.rej
 .*.swp
 *.log
 *.tmp
+fusion_result.json
 
 # Virtual Environment
 venv/
