@@ -227,6 +227,7 @@ def train(
             for step, batch in enumerate(train_dataloader):
                 if train_config.batching_strategy == "dynamic" and deepspeed_join(group_join):
                     break
+                total_step += 1
                 for key in batch.keys():
                     batch[key] = (
                         batch[key].to(f"npu:{local_rank}").half()
@@ -278,7 +279,7 @@ def train(
                     f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)  if train_config.batching_strategy != 'dynamic' else ''} completed (loss: {loss.detach().float()}, acc: {acc})"
                 )
 
-                if (step + 1) % train_config.validation_interval == 0 and train_config.run_validation:
+                if total_step % train_config.validation_interval == 0 and train_config.run_validation:
                     eval_ppl, eval_epoch_loss, *rest = evaluation(
                         model, train_config, eval_dataloader, local_rank, tokenizer
                     )
@@ -287,7 +288,7 @@ def train(
 
                     
                     # if train_config.save_model and (eval_epoch_loss < best_val_loss or eval_epoch_acc > best_val_acc):
-                    checkpoint_name = f"{train_config.model_name}_epoch_{str(epoch+1)}_step_{step+1}"
+                    checkpoint_name = f"{train_config.model_name}_epoch_{str(epoch+1)}_total_step_{total_step}"
                     save_model_checkpoint_deepspeed(
                         model, train_config, checkpoint_name
                     )
@@ -329,9 +330,6 @@ def train(
             pbar.close()
         # prof.stop()
         dist.destroy_process_group(group_join)
-
-        total_step += (step + 1)
-
         epoch_end_time = time.perf_counter() - epoch_start_time
         epoch_times.append(epoch_end_time)
         # Reducing total_loss across all devices if there's more than one npu device
