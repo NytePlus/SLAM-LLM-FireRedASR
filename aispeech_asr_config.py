@@ -115,12 +115,12 @@ class DataConfig:
     normalize: Optional[bool] = field(default=False, metadata={
         "help": "whether input is normalized, used for models such as wavlm"
     })
-    spec_aug: bool = True
+    spec_aug: bool = False
     spec_aug_conf: Dict[str, int] = field(default_factory=lambda: {"num_t_mask": 4, "num_f_mask": 4, "max_t": 50, "max_f": 10})
-    wav_reverb: bool = True
+    wav_reverb: bool = False
     reverb_prob: float = 0.3
     rirs_path: str = "./data/rirs.wavlist"
-    add_noise: bool = True
+    add_noise: bool = False
     noise_prob: float = 0.3
     noises_path: str = "./data/noises.wavlist"
 

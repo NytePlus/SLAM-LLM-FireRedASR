@@ -1,31 +1,25 @@
 #!/bin/bash
-# export PYTHONPATH=/root/fairseq:$PYTHONPATH
-# export ASCEND_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export TOKENIZERS_PARALLELISM=false
-# export HCCL_CONNECT_TIMEOUT=7200
-# export CUDA_LAUNCH_BLOCKING=1
 export HYDRA_FULL_ERROR=1
 export OMP_NUM_THREADS=1
 export TASK_QUEUE_ENABLE=2
 export ASCEND_LAUNCH_BLOCKING=0
 
-# run_dir=/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/project/SLAM-LLM-FireRedASR
-# cd $run_dir
 code_dir=.
-dataset=mandarin_long_merge_20-30
+dataset=mandarin_long_merge_20-30+hotword3
 task=
 train_scp_file_path=./data/${dataset}/${task}/train/
 dev_scp_file_path=./data/${dataset}/${task}/dev/
-train_max_frame_length=600
+train_max_frame_length=800
 eval_max_frame_length=2000
 multitask_prompt_path=conf/multiprompt.jsonl
-ckpt_path=
-# prompt_style="\{\}\\<speech\\>" # "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n" | "USER: {}\n ASSISTANT:"
+ckpt_path=exp/20250829-0037-mandarin_long_merge_20-30-loratrue__instruct/aispeech_asr_epoch_4_step_40000
 projector=linear
 
 use_peft=true # For llm
 use_fp16=true
 freeze_encoder=false
+freeze_projector=false
 freeze_llm=true
 # use absolute path
 deepspeed_config=conf/ds_config.json
@@ -45,11 +39,15 @@ hydra.run.dir=$output_dir \
 ++dataset_config.eval_max_frame_length=$eval_max_frame_length \
 ++dataset_config.train_scp_file_path=$train_scp_file_path \
 ++dataset_config.dev_scp_file_path=$dev_scp_file_path \
+++dataset_config.spec_aug=true \
+++dataset_config.wav_reverb=true \
+++dataset_config.add_noise=true \
 ++train_config.model_name=aispeech_asr \
 ++train_config.num_epochs=50 \
 ++train_config.use_peft=$use_peft \
 ++train_config.freeze_llm=$freeze_llm \
 ++train_config.freeze_encoder=$freeze_encoder \
+++train_config.freeze_projector=$freeze_projector \
 ++train_config.batching_strategy=dynamic \
 ++train_config.validation_interval=10000 \
 ++train_config.num_workers_dataloader=4 \
