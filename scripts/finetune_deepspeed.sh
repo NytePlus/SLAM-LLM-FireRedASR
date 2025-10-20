@@ -58,7 +58,7 @@ if [[ $use_peft == "true" && -n "$ckpt_path" ]];then
     hydra_args+=" ++ckpt_path=$ckpt_path/pytorch_model.bin"
 fi
 
-# debug
+# 单机Debug
 # deepspeed \
 #      $code_dir/finetune_deepspeed.py \
 #      ++train_config.enable_fsdp=false \
@@ -68,6 +68,8 @@ fi
 #      ${hydra_args}
 
 # exit 0
+
+# 集群分布式训练
 
 HOST_FILE="/tmp/"${JobID}                        #生成的hostfile的完整文件名，$JobID调度系统会自动生成
  

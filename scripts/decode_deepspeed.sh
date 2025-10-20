@@ -3,10 +3,10 @@
 code_dir=.
 use_peft=true
 eval_max_frame_length=3000
-ckpt_path=exp/20250929-1803-mandarin_long_merge_20-30+hotword2-loratrue__instruct/aispeech_asr_epoch_1_total_step_3000
+ckpt_path=exp/20251010-1740-mandarin_long_merge_20-30+hotword3-loratrue__instruct/aispeech_asr_epoch_2_total_step_160000
 dataset=test
-task=test_meeting_vad_cuts
-test_scp_file_path=/aistor/aispeech/hpc_stor01/home/lixu/data/test_meeting_vad_cuts
+task=ContextASR-Speech_Mandarin_dur30_with_all_hotword
+test_scp_file_path=/aistor/aispeech/hpc_stor01/home/lixu/data/$task
 llm_name="Qwen2-7B-Instruct"
 llm_path=/aistor/aispeech/hpc_stor01/group/asr/model/${llm_name}
 llm_dim=3584
@@ -22,6 +22,7 @@ deepspeed \
     ++dataset_config.test_scp_file_path=$test_scp_file_path \
     ++dataset_config.inference_mode=true \
     ++dataset_config.eval_max_frame_length=$eval_max_frame_length \
+    ++dataset_config.max_audio_length=30 \
     ++train_config.model_name=aispeech_asr \
     ++train_config.use_peft=$use_peft \
     ++train_config.batching_strategy=dynamic \
