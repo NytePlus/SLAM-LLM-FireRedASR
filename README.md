@@ -20,4 +20,4 @@ We extract code from [SLAM-LLM](https://github.com/X-LANCE/SLAM-LLM) and [Firere
 
 **On-the-fly data augmentation**: support spectral augmentaton, reverberation and noise adding.
 
-**Deepspeed training**: multi-machine multi-GPU training using deepspeed.
+**Training on NPU**: multi-machine multi-NPU training using deepspeed. If GPU training is required, simply replace all `.npu` with `.cuda` in the code.
