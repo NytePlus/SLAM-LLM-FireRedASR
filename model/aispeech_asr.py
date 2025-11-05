@@ -11,8 +11,9 @@ import types
 from typing import List, Optional, Tuple, Union
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-from peft import PeftModel, LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
+from peft import PeftModel, LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from wavlm.WavLM import WavLM, WavLMConfig
 from utils.metric import compute_accuracy
 from utils.config_utils import generate_peft_config
 from utils.model_utils import print_model_size, print_module_size
@@ -30,8 +31,20 @@ def setup_tokenizer(train_config, model_config, **kwargs):
 
 def setup_encoder(train_config, model_config, **kwargs):
     encoder_name = model_config.encoder_name
+    if encoder_name == "conformer":
+        encoder = ConformerEncoder(**model_config["encoder_config"])
+    elif encoder_name == "wavlm":
 
-    encoder = ConformerEncoder(**model_config["encoder_config"])
+        checkpoint = torch.load(kwargs.get( "encoder_ckpt_path", None))
+        cfg = WavLMConfig(checkpoint['cfg'])
+        encoder = WavLM(cfg)
+        encoder.load_state_dict(checkpoint['model'])
+
+    else:
+        raise NotImplementedError(
+            f"Unsupported encoder_name: '{encoder_name}'. "
+            "Currently only 'conformer' and 'wavlm' are implemented."
+        )
     print_module_size(encoder, encoder_name, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
 
     if train_config.freeze_encoder:
@@ -41,10 +54,17 @@ def setup_encoder(train_config, model_config, **kwargs):
         print_module_size(encoder, encoder_name, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
 
     return encoder
+    
 
 
 def setup_encoder_projector(train_config, model_config, **kwargs):
-    encoder_projector = Adapter(model_config["encoder_config"]["d_model"],model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
+    encoder_name = model_config.encoder_name
+    if encoder_name == "conformer":
+        encoder_dim = model_config["encoder_config"]["d_model"]
+    elif encoder_name == "wavlm":
+        encoder = torch.load(kwargs.get( "encoder_ckpt_path", None))
+        encoder_dim = encoder['cfg']['encoder_embed_dim']
+    encoder_projector = Adapter(encoder_dim,model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
     print_module_size(encoder_projector, "adapter", int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
 
     if train_config.freeze_projector:
@@ -103,7 +123,7 @@ def model_factory(train_config, model_config, **kwargs):
 
     # encoder
     encoder = setup_encoder(train_config, model_config, **kwargs)
-    
+
     # projector
     encoder_projector = setup_encoder_projector(
         train_config, model_config, **kwargs
@@ -119,12 +139,13 @@ def model_factory(train_config, model_config, **kwargs):
         **kwargs,
     )
     firered_path = model_config.get( "firered_path", None)
-    if firered_path is not None:
+    if firered_path is not None and firered_path != '':
         logger.info("loading pretrain parts from: {}".format(firered_path))
         firered_dict = torch.load(firered_path, map_location="cpu")
         model.load_state_dict(firered_dict["model_state_dict"], strict=False)
+
     ckpt_path = kwargs.get( "ckpt_path", None)
-    if ckpt_path is not None:
+    if ckpt_path is not None and ckpt_path != '':
         logger.info("loading other parts from: {}".format(ckpt_path))
         ckpt_dict = torch.load(ckpt_path, map_location="cpu")
         model.load_state_dict(ckpt_dict, strict=False)
@@ -232,8 +253,12 @@ class slam_model_asr(torch.nn.Module):
                 output_hidden_states: Optional[bool] = None,
                 return_dict: Optional[bool] = None,
                 ):
-
-        encoder_outs,encoder_feature_length,_ = self.encoder(input_features,input_feature_length) # bs*seq*dim
+        if type(self.encoder).__name__ == 'WavLM':
+            encoder_outs = self.encoder.extract_features(input_features)[0]
+            encoder_feature_length = torch.full((encoder_outs.shape[0],), encoder_outs.shape[1], device=encoder_outs.device)
+        elif type(self.encoder).__name__ == 'ConformerEncoder':
+            encoder_outs,encoder_feature_length,_ = self.encoder(input_features,input_feature_length) # bs*seq*dim
+        
         projector_outs = self.encoder_projector(encoder_outs)
         projector_feature_length = encoder_feature_length // self.encoder_projector.ds
         # print("\n","End",inputs_embeds, attention_mask, labels, position_ids,encoder_feature_length,projector_feature_length)

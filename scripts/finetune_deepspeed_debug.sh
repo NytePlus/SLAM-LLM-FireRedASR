@@ -5,9 +5,9 @@ export OMP_NUM_THREADS=1
 export TASK_QUEUE_ENABLE=2
 export ASCEND_LAUNCH_BLOCKING=0
 
-# export LOCAL_RANK=0
-# export RANK=0
-# export WORLD_SIZE=1
+export LOCAL_RANK=0
+export RANK=0
+export WORLD_SIZE=1
 
 code_dir=.
 dataset=librispeech-960
@@ -19,7 +19,6 @@ eval_max_frame_length=2000
 multitask_prompt_path=conf/multiprompt.jsonl
 file=dataset/speech_dataset_large_wavlm.py:get_speech_dataset
 ckpt_path=
-projector=linear
 
 use_peft=false # For llm
 use_fp16=true
@@ -34,6 +33,10 @@ deepspeed_config=conf/ds_config.json
 # Choose Encoder
 encoder_name=wavlm
 encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/guoyiwei/remote/code/AudioFeatExtraction/wavlm/pretrained/WavLM-Large.pt
+
+
+# Choose Projector
+projector=linear
 
 # Choose LLM
 llm_name=vicuna-7b-v1.5
@@ -66,7 +69,7 @@ hydra.run.dir=$output_dir \
 ++train_config.freeze_projector=$freeze_projector \
 ++train_config.batching_strategy=dynamic \
 ++train_config.validation_interval=10000 \
-++train_config.num_workers_dataloader=4 \
+++train_config.num_workers_dataloader=0 \
 ++train_config.output_dir=$output_dir \
 ++metric=acc \
 "
@@ -79,28 +82,28 @@ if [[ $use_peft == "true" && -n "$ckpt_path" ]];then
 fi
 
 # 单机Debug
-# python \
-#      $code_dir/finetune_deepspeed.py \
-#      ++train_config.enable_fsdp=false \
-#      ++train_config.enable_ddp=true \
-#      ++train_config.use_fp16=$use_fp16 \
-#      ++deepspeed_config=$deepspeed_config \
-#      ${hydra_args}
-
-# exit 0
-
-# 调试机多卡训练
-deepspeed \
-    --num_nodes 1 \
-    --num_gpus 8 \
-    $code_dir/finetune_deepspeed.py \
-    ++train_config.enable_fsdp=false \
-    ++train_config.enable_ddp=true \
-    ++train_config.use_fp16=$use_fp16 \
-    ++deepspeed_config=$deepspeed_config \
-    ${hydra_args}
+python \
+     $code_dir/finetune_deepspeed.py \
+     ++train_config.enable_fsdp=false \
+     ++train_config.enable_ddp=true \
+     ++train_config.use_fp16=$use_fp16 \
+     ++deepspeed_config=$deepspeed_config \
+     ${hydra_args}
 
 exit 0
+
+# 调试机多卡训练
+# deepspeed \
+#     --num_nodes 1 \
+#     --num_gpus 8 \
+#     $code_dir/finetune_deepspeed.py \
+#     ++train_config.enable_fsdp=false \
+#     ++train_config.enable_ddp=true \
+#     ++train_config.use_fp16=$use_fp16 \
+#     ++deepspeed_config=$deepspeed_config \
+#     ${hydra_args}
+
+# exit 0
 
 # 集群分布式训练
 

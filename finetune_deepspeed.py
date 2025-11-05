@@ -30,6 +30,9 @@ class RunConfig:
     ckpt_path: Optional[str] = field(
         default=None, metadata={"help": "The path to projector checkpoint"}
     )
+    encoder_ckpt_path: Optional[str] = field(
+        default=None, metadata={"help": "The path to wavlm-encoder checkpoint"}
+    )
     deepspeed_config : str =""
     
 
