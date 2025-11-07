@@ -20,7 +20,24 @@ from utils.model_utils import print_model_size, print_module_size
 from utils.npu_flash_attn import patch_npu_flash_attn
 from collections import OrderedDict
 logger = logging.getLogger(__name__)
+def extract_variable_length_features(self, x: torch.Tensor):
+        """
+        x : torch.Tensor, shape = (batch_size, n_mels, n_ctx)
+            the mel spectrogram of the audio
+        """
+        x = F.gelu(self.conv1(x))
+        x = F.gelu(self.conv2(x))
+        x = x.permute(0, 2, 1)
 
+        # assert x.shape[1:] == self.positional_embedding.shape, "incorrect audio shape"
+        # x = (x + self.positional_embedding).to(x.dtype)
+        x = (x + self.positional_embedding[: x.shape[1]]).to(x.dtype)
+
+        for block in self.blocks:
+            x = block(x)
+
+        x = self.ln_post(x)
+        return x
 
 def setup_tokenizer(train_config, model_config, **kwargs):
     # Load the tokenizer and add special tokens
@@ -34,16 +51,18 @@ def setup_encoder(train_config, model_config, **kwargs):
     if encoder_name == "conformer":
         encoder = ConformerEncoder(**model_config["encoder_config"])
     elif encoder_name == "wavlm":
-
-        checkpoint = torch.load(kwargs.get( "encoder_ckpt_path", None))
+        checkpoint = torch.load(model_config['encoder_path'])
         cfg = WavLMConfig(checkpoint['cfg'])
         encoder = WavLM(cfg)
         encoder.load_state_dict(checkpoint['model'])
+    elif encoder_name == "whisper":
+        import whisper
+        encoder = whisper.load_model(name=model_config.encoder_path, device='cpu').encoder
+        encoder.extract_variable_length_features = types.MethodType(extract_variable_length_features, encoder)
 
     else:
         raise NotImplementedError(
             f"Unsupported encoder_name: '{encoder_name}'. "
-            "Currently only 'conformer' and 'wavlm' are implemented."
         )
     print_module_size(encoder, encoder_name, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
 
@@ -62,8 +81,13 @@ def setup_encoder_projector(train_config, model_config, **kwargs):
     if encoder_name == "conformer":
         encoder_dim = model_config["encoder_config"]["d_model"]
     elif encoder_name == "wavlm":
-        encoder = torch.load(kwargs.get( "encoder_ckpt_path", None))
-        encoder_dim = encoder['cfg']['encoder_embed_dim']
+        encoder_dim = model_config['encoder_dim']
+    elif encoder_name == 'whisper':
+        encoder_dim = model_config['encoder_dim']
+    else:
+        raise NotImplementedError(
+            f"Unsupported encoder_name: '{encoder_name}'. "
+        )
     encoder_projector = Adapter(encoder_dim,model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
     print_module_size(encoder_projector, "adapter", int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
 
@@ -256,11 +280,19 @@ class slam_model_asr(torch.nn.Module):
         if type(self.encoder).__name__ == 'WavLM':
             encoder_outs = self.encoder.extract_features(input_features)[0]
             encoder_feature_length = torch.full((encoder_outs.shape[0],), encoder_outs.shape[1], device=encoder_outs.device)
+            projector_outs = self.encoder_projector(encoder_outs)
+
         elif type(self.encoder).__name__ == 'ConformerEncoder':
             encoder_outs,encoder_feature_length,_ = self.encoder(input_features,input_feature_length) # bs*seq*dim
-        
-        projector_outs = self.encoder_projector(encoder_outs)
+            projector_outs = self.encoder_projector(encoder_outs)
+
+        elif type(self.encoder).__name__ == 'AudioEncoder':
+            encoder_outs = self.encoder(input_features) # bs*seq*dim
+            projector_outs = self.encoder_projector(encoder_outs)
+            encoder_feature_length = input_feature_length // 2
+            
         projector_feature_length = encoder_feature_length // self.encoder_projector.ds
+        
         # print("\n","End",inputs_embeds, attention_mask, labels, position_ids,encoder_feature_length,projector_feature_length)
         inputs_embeds = self.llm.get_input_embeddings()(input_ids)
         inputs_embeds, attention_mask, labels, position_ids, _ = self._merge_input_ids_with_audio_features(

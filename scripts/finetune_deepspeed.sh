@@ -8,6 +8,7 @@ export ASCEND_LAUNCH_BLOCKING=0
 # export LOCAL_RANK=0
 # export RANK=0
 # export WORLD_SIZE=1
+# export ASCEND_RT_VISIBLE_DEVICES=7
 
 code_dir=.
 dataset=librispeech-960
@@ -17,9 +18,7 @@ dev_scp_file_path=./data/${dataset}/${task}/dev/
 train_max_frame_length=800
 eval_max_frame_length=2000
 multitask_prompt_path=conf/multiprompt.jsonl
-file=dataset/speech_dataset_large_wavlm.py:get_speech_dataset
 ckpt_path=
-projector=linear
 
 use_peft=false # For llm
 use_fp16=true
@@ -32,8 +31,32 @@ firered_path=
 deepspeed_config=conf/ds_config.json
 
 # Choose Encoder
-encoder_name=wavlm
-encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/guoyiwei/remote/code/AudioFeatExtraction/wavlm/pretrained/WavLM-Large.pt
+encoder_name=whisper
+if [[ $encoder_name == "whisper" ]]
+then
+    encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/Whisper/medium.pt
+    mel_size=80 
+    encoder_dim=1024
+    file=dataset/speech_dataset_large_whisper.py:get_speech_dataset
+    
+elif [[ $encoder_name == "wavlm" ]]
+then
+    encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/guoyiwei/remote/code/AudioFeatExtraction/wavlm/pretrained/WavLM-Large.pt
+    encoder_dim=1024
+    file=dataset/speech_dataset_large_wavlm.py:get_speech_dataset
+
+elif [[ $encoder_name == "conformer" ]]
+then
+    firered_path=
+    encoder_dim=1280
+    file=dataset/speech_dataset_large.py:get_speech_dataset
+else
+    exit 1
+fi
+
+
+# Choose Projector
+projector=linear
 
 # Choose LLM
 llm_name=vicuna-7b-v1.5
@@ -46,6 +69,9 @@ output_dir=${code_dir}/exp/$(date +"%Y%m%d-%H%M")-$dataset-lora${use_peft}_${tas
 hydra_args="
 hydra.run.dir=$output_dir \
 ++model_config.encoder_name=$encoder_name \
+++model_config.encoder_path=$encoder_ckpt_path \
+++model_config.encoder_dim=$encoder_dim \
+++model_config.encoder_projector=$projector \
 ++model_config.llm_name=$llm_name \
 ++model_config.llm_path=$llm_path \
 ++model_config.llm_dim=$llm_dim \
@@ -70,9 +96,6 @@ hydra.run.dir=$output_dir \
 ++train_config.output_dir=$output_dir \
 ++metric=acc \
 "
-if [[ $encoder_name == "wavlm" && -n "$encoder_ckpt_path" ]];then
-    hydra_args+=" ++encoder_ckpt_path=$encoder_ckpt_path"
-fi
 
 if [[ $use_peft == "true" && -n "$ckpt_path" ]];then
     hydra_args+=" ++ckpt_path=$ckpt_path/pytorch_model.bin"

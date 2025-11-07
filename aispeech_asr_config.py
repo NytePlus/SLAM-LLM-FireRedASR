@@ -24,6 +24,9 @@ class ModelConfig:
     llm_dim: int = 4096
     encoder_name: str = 'conformer'
     encoder_config: ConformerConfig = field(default_factory=ConformerConfig)  #
+    encoder_path: Optional[str] = None
+    encoder_dim: int = 768
+    encoder_projector: str = "linear"
     firered_path :str = "/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/model/FireRedASR-LLM/model.pth.tar"
     encoder_projector_ds_rate: int = 2
 
@@ -38,6 +41,18 @@ class PeftConfig:
     task_type: str = "CAUSAL_LM"
     lora_dropout: float = 0.05
     inference_mode: bool = False
+
+@dataclass
+class FbankConfig:
+    num_mel_bins: int = 128  # 梅尔频率滤波器组的滤波器数量为80
+    frame_length: int = 25  # 音频帧的长度为25毫秒
+    frame_shift: int = 10  # 帧移为10毫秒
+    dither: float = 0.001  # 抖动系数为0.001
+    window_type: str = "hamming"  # 使用hamming窗口类型
+    use_energy: bool = False  # 不使用能量特征
+    low_freq:int = 0  # 低频截止频率为0Hz
+    high_freq: int = 8000  # 高频截止频率为8000Hz
+    htk_compat: bool = True  # 尝试使其与HTK兼容
 
 
 @dataclass
@@ -105,6 +120,7 @@ class DataConfig:
     inference_mode: bool = False
     lower: bool = False
     fix_length_audio: int = -1
+    fbankConfig: FbankConfig = field(default_factory=FbankConfig)
     inference_mode:bool = False
     input_type: str = field(default="raw", metadata={
                                 "help":"Use raw when input is wav, mel when for whisper"

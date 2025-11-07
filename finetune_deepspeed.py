@@ -203,7 +203,6 @@ def main(kwargs: DictConfig):
             **val_dl_kwargs,
         )
 
-
     # Start the training process
     results = train(
         model_engine,

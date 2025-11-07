@@ -64,6 +64,7 @@ class MultiTaskDataset(IterableDataset):
         self.max_audio_length = dataset_config.get("max_audio_length", 30)
         self.inference_mode = dataset_config.get("inference_mode", False)
         self.sample_rate = 16000
+        self.mel_size = dataset_config.get("mel_size", 128)
 
     def __iter__(self):
         multitask_task_path = os.path.join(self.data_path,"multitask.jsonl")
@@ -93,11 +94,17 @@ class MultiTaskDataset(IterableDataset):
                     key = item["key"]
                     target = item["target"].lower()
                     task = item["task"]
-                    sample_rate, wav_np = kaldiio.load_mat(ark_path)
-                    audio_raw = wav_np.astype(np.float32) / 32768
-                    
+                    numpy_array = kaldiio.load_mat(ark_path)
+                    audio_raw = numpy_array[1].astype(np.float32) / 32768
                     if len(audio_raw) / self.sample_rate > self.max_audio_length or len(audio_raw) / self.sample_rate < 0.1: 
                         continue
+                    audio_raw = torch.from_numpy(audio_raw).float().unsqueeze(0)
+                    input_features = self.extract_fbank(audio_raw)
+                    audio_raw = whisper.pad_or_trim(audio_raw)
+                    input_features = whisper.log_mel_spectrogram(audio_raw, n_mels=self.mel_size)
+                    input_features = input_features.squeeze(0)
+                    
+                    input_feature_length = input_features.shape[1]
 
                     if self.dataset_config.wav_reverb:
                         wav_tensor = torch.from_numpy(wav_np).float().unsqueeze(0)
@@ -109,10 +116,6 @@ class MultiTaskDataset(IterableDataset):
                         wav_tensor = self.add_noise(wav_tensor, sample_rate, self.dataset_config.noise_prob)
                         wav_np = wav_tensor.squeeze(0).numpy()                       
 
-                    input_features = torch.from_numpy(audio_raw) 
-                    input_features = torch.nn.functional.layer_norm(input_features , input_features.shape)
-                    input_feature_length = input_features.shape[0]
-                    
                     # feature postprocessing
                     if self.dataset_config.spec_aug:
                         spec_aug_conf = self.dataset_config.spec_aug_conf
