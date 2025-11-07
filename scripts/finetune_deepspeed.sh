@@ -60,10 +60,25 @@ projector=linear
 
 # Choose LLM
 llm_name=vicuna-7b-v1.5
-llm_path=/aistor/aispeech/hpc_stor01/group/asr/model/${llm_name}
-llm_dim=3584
-llm_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
-llm_dim=4096
+if [[ $llm_name == "vicuna-7b-v1.5" ]]
+then
+    llm_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
+    llm_dim=4096
+elif [[ $llm_name == "Qwen2.5-7B-Instruct" ]]
+then
+    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-7B-Instruct
+    llm_dim=3584 
+elif [[ $llm_name == "Qwen2-7B" ]]
+then
+    llm_path=
+    llm_dim=3584 
+elif [[ $llm_name == "Qwen2.5-1.5B-Instruct" ]]
+then
+    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-1.5B-Instruct
+    llm_dim=3584 
+else
+    exit 1
+fi
 
 output_dir=${code_dir}/exp/$(date +"%Y%m%d-%H%M")-$dataset-lora${use_peft}_${task}_instruct
 hydra_args="
