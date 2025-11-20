@@ -30,6 +30,7 @@ wheels/
 *.log
 *.tmp
 fusion_result.json
+.devcontainer/
 
 # Virtual Environment
 venv/

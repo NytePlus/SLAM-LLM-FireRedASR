@@ -218,11 +218,12 @@ def train(
             model.train()
             total_loss = torch.tensor(0.0).to(f"npu:{local_rank}")
             total_acc = 0
-            if train_config.batching_strategy != "dynamic":
-                total_length = len(train_dataloader)//gradient_accumulation_steps
-                pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
-            else:
-                pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", dynamic_ncols=True)
+            if rank == 0:
+                if train_config.batching_strategy != "dynamic":
+                    total_length = len(train_dataloader)//gradient_accumulation_steps
+                    pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
+                else:
+                    pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", dynamic_ncols=True)
 
             for step, batch in enumerate(train_dataloader):
                 if train_config.batching_strategy == "dynamic" and deepspeed_join(group_join):
@@ -240,6 +241,7 @@ def train(
                         )
                     )
                 with autocast(dtype=torch.bfloat16):
+                    # print(batch)
                     outputs, *rest = model(**batch)
                 acc = rest[0] if rest else -1
                 loss = outputs.loss
@@ -272,12 +274,13 @@ def train(
                 model.backward(loss)
                 model.step()
                 # prof.step()
-                if (step + 1) % gradient_accumulation_steps == 0 :
-                    pbar.update(1)
+                if rank == 0:
+                    if (step + 1) % gradient_accumulation_steps == 0 :
+                        pbar.update(1)
 
-                pbar.set_description(
-                    f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)  if train_config.batching_strategy != 'dynamic' else ''} completed (loss: {loss.detach().float()}, acc: {acc})"
-                )
+                    pbar.set_description(
+                        f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)  if train_config.batching_strategy != 'dynamic' else ''} completed (loss: {loss.detach().float()}, acc: {acc})"
+                    )
 
                 if total_step % train_config.validation_interval == 0 and train_config.run_validation:
                     eval_ppl, eval_epoch_loss, *rest = evaluation(
@@ -327,7 +330,8 @@ def train(
                             )
 
                     dist.barrier()
-            pbar.close()
+            if rank == 0:
+                pbar.close()
         # prof.stop()
         dist.destroy_process_group(group_join)
         epoch_end_time = time.perf_counter() - epoch_start_time

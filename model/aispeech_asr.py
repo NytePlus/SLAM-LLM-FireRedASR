@@ -134,19 +134,30 @@ def setup_llm(train_config, model_config, **kwargs):
 def model_factory(train_config, model_config, **kwargs):
     tokenizer = setup_tokenizer(train_config, model_config, **kwargs)
     DEFAULT_SPEECH_TOKEN = "<speech>"
+    DEFAULT_IMAGE_TOKEN = "<image>"
     DEFAULT_IGNORE_TOKEN = -100
-    special_tokens_dict = {"additional_special_tokens": [DEFAULT_SPEECH_TOKEN]}
+    special_tokens_dict = {"additional_special_tokens": [DEFAULT_SPEECH_TOKEN, DEFAULT_IMAGE_TOKEN]}
     tokenizer.add_special_tokens(special_tokens_dict)
+
     tokenizer.default_ignore_token = DEFAULT_IGNORE_TOKEN
-    tokenizer.default_speech_token = tokenizer.convert_tokens_to_ids(
-            DEFAULT_SPEECH_TOKEN
-        )
+    tokenizer.default_speech_token = tokenizer.convert_tokens_to_ids(DEFAULT_SPEECH_TOKEN)
+    tokenizer.default_image_token = tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_TOKEN)
     
     # llm
     llm = setup_llm(train_config, model_config, **kwargs)
 
     # encoder
     encoder = setup_encoder(train_config, model_config, **kwargs)
+
+    # TODO: image encoder projector
+    # from transformers import Qwen2VLForConditionalGeneration
+    # model = Qwen2VLForConditionalGeneration.from_pretrained(
+    #     "Qwen/Qwen2-VL-7B-Instruct",
+    #     torch_dtype=torch.float16,
+    #     device_map="auto"
+    # )
+    # image_encoder = model.vision_model
+    # image_encoder_projector = Adapter(128, model_config["llm_dim"], 1)
 
     # projector
     encoder_projector = setup_encoder_projector(
@@ -160,6 +171,8 @@ def model_factory(train_config, model_config, **kwargs):
         tokenizer,
         train_config,
         model_config,
+        # image_encoder=image_encoder,
+        # image_encoder_projector=image_encoder_projector,
         **kwargs,
     )
     firered_path = model_config.get( "firered_path", None)
@@ -230,17 +243,25 @@ class slam_model_asr(torch.nn.Module):
         tokenizer,
         train_config,
         model_config,
+        image_encoder = None,
+        image_encoder_projector = None,
         **kwargs,
     ):
         super().__init__()
         # modality encoder 
         self.encoder = encoder
 
+        # image encoder
+        self.image_encoder = image_encoder
+
         # llm
         self.llm = llm
 
         # projector
         self.encoder_projector = encoder_projector
+
+        # image projector
+        self.image_encoder_projector = image_encoder_projector
 
         # tokenizer
         self.tokenizer = tokenizer
@@ -313,6 +334,7 @@ class slam_model_asr(torch.nn.Module):
     def generate(self,
                 input_ids: torch.LongTensor = None,
                 input_features: Optional[torch.Tensor] = None,
+                image_tensor: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 input_feature_length : Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.LongTensor] = None,
@@ -327,13 +349,38 @@ class slam_model_asr(torch.nn.Module):
                 ):
         
 
-        encoder_outs,encoder_feature_length,_ = self.encoder(input_features,input_feature_length) # bs*seq*dim
-        projector_outs = self.encoder_projector(encoder_outs)
+        if type(self.encoder).__name__ == 'WavLM':
+            encoder_outs = self.encoder.extract_features(input_features)[0]
+            encoder_feature_length = torch.full((encoder_outs.shape[0],), encoder_outs.shape[1], device=encoder_outs.device)
+            projector_outs = self.encoder_projector(encoder_outs)
+
+        elif type(self.encoder).__name__ == 'ConformerEncoder':
+            encoder_outs,encoder_feature_length,_ = self.encoder(input_features,input_feature_length) # bs*seq*dim
+            projector_outs = self.encoder_projector(encoder_outs)
+
+        elif type(self.encoder).__name__ == 'AudioEncoder':
+            encoder_outs = self.encoder(input_features) # bs*seq*dim
+            projector_outs = self.encoder_projector(encoder_outs)
+            encoder_feature_length = input_feature_length // 2
+
         projector_feature_length = encoder_feature_length // self.encoder_projector.ds
         inputs_embeds = self.llm.get_input_embeddings()(input_ids)
-        inputs_embeds, attention_mask, labels, position_ids, _ = self._merge_input_ids_with_audio_features(
+        inputs_embeds, attention_mask, labels, position_ids, input_ids = self._merge_input_ids_with_audio_features(
                 projector_outs, projector_feature_length, inputs_embeds, input_ids, attention_mask, labels
             )
+
+        # --- TODO: 融入图像模态 ---
+        # image_encoder_outs = self.image_encoder.extract_features(audio_features)[0]
+        # encoder_feature_length = torch.full((image_encoder_outs.shape[0],), image_encoder_outs.shape[1], device=image_encoder_outs.device)
+        # image_projector_outs = self.encoder_projector(image_encoder_outs)
+
+        # image_projector_feature_length = encoder_feature_length // self.image_encoder_projector.ds
+        # inputs_embeds = self.llm.get_input_embeddings()(input_ids)
+        # inputs_embeds, attention_mask, labels, position_ids, _ = self._merge_input_ids_with_nontext_features(
+        #         image_projector_outs, image_projector_feature_length, inputs_embeds, input_ids, attention_mask, labels, self.tokenizer.default_image_token
+        #     )
+        # --- end ---
+
         model_outputs = self.llm.generate(
             inputs_embeds=inputs_embeds,
             max_new_tokens=kwargs.get("max_new_tokens", 200),
@@ -546,6 +593,164 @@ class slam_model_asr(torch.nn.Module):
             masked_audio_features.contiguous().reshape(-1, embed_dim).to(target_device)
         )
         final_attention_mask |= audio_to_overwrite
+        position_ids = (final_attention_mask.cumsum(-1) - 1).masked_fill_((final_attention_mask == 0), 1)
+
+        return final_embedding, final_attention_mask, final_labels, position_ids, final_input_ids
+
+    def _merge_input_ids_with_nontext_features(
+            self, 
+            nontext_features, 
+            num_nontext_tokens, 
+            inputs_embeds, 
+            input_ids, 
+            attention_mask, 
+            labels, 
+            placeholder_token_id
+        ):
+        """
+        Generic function to merge input_ids with non-text features into final embeddings
+        
+        Args:
+            nontext_features (`torch.Tensor` of shape `(num_features, max_feature_tokens, embed_dim)`):
+                All non-text feature vectors in the batch
+            num_nontext_tokens (`torch.LongTensor` of shape `(num_features)`):
+                The length of feature embeddings for each feature
+            inputs_embeds (`torch.Tensor` of shape `(batch_size, sequence_length, embed_dim)`):
+                Token embeddings before merging with non-text embeddings
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Input_ids of tokens, possibly filled with placeholder tokens
+            attention_mask (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Mask to avoid performing attention on padding token indices.
+            labels (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional`)
+                Labels need to be recalculated to support training (if provided)
+            placeholder_token_id (`int`):
+                The token id used as placeholder for non-text features
+            ignore_token_id (`int`, *optional*):
+                Token id to use for ignoring positions in labels (defaults to tokenizer's default_ignore_token)
+        
+        Returns:
+            final_embedding, final_attention_mask, final_labels, position_ids, final_input_ids
+        """
+        num_features, max_feature_tokens, embed_dim = nontext_features.shape
+        
+        # Create mask for valid non-text features
+        nontext_features_mask = torch.arange(max_feature_tokens).expand(num_features, max_feature_tokens).to(
+            num_nontext_tokens.device
+        ) < num_nontext_tokens.unsqueeze(1)
+        masked_nontext_features = nontext_features[nontext_features_mask].view(-1, embed_dim)
+        
+        batch_size, sequence_length = input_ids.shape
+        
+        # Detect padding direction
+        _left_padding = torch.any(attention_mask[:, 0] == 0)
+        _right_padding = torch.any(attention_mask[:, -1] == 0)
+
+        left_padding = True
+        if batch_size > 1:
+            if _left_padding and not _right_padding:
+                left_padding = True
+            elif not _left_padding and _right_padding:
+                left_padding = False
+            elif not _left_padding and not _right_padding:
+                left_padding = True
+            else:
+                raise ValueError(f"Invalid attention_mask: {attention_mask}")
+
+        # 1. Create a mask to know where placeholder tokens are
+        placeholder_mask = input_ids == placeholder_token_id
+        num_placeholder_tokens = torch.sum(placeholder_mask, dim=-1)
+
+        # Ensure all tensors are on the correct device
+        target_device = inputs_embeds.device
+        attention_mask = attention_mask.to(target_device)
+        input_ids = input_ids.to(target_device)
+        num_nontext_tokens = num_nontext_tokens.to(target_device)
+        
+        # Find indices of non-placeholder tokens (regular text tokens)
+        batch_indices, non_placeholder_indices = torch.where(
+            (input_ids != placeholder_token_id) & (attention_mask == 1)
+        )
+
+        # 2. Compute the positions where text should be written
+        # Each placeholder token will be replaced by `num_nontext_tokens - 1` text tokens
+        token_placeholder_num = torch.zeros_like(input_ids)
+        token_placeholder_num[placeholder_mask] = num_nontext_tokens.long() - 1
+        token_placeholder_num = token_placeholder_num + 1
+        
+        new_token_positions = torch.cumsum(token_placeholder_num, -1) - 1
+        max_token_num = token_placeholder_num.sum(-1).max()
+        nb_feature_pad = max_token_num - 1 - new_token_positions[:, -1]
+        
+        if left_padding:
+            new_token_positions += nb_feature_pad[:, None]  # offset for left padding
+        
+        text_to_overwrite = new_token_positions[batch_indices, non_placeholder_indices]
+        batch_indices, non_placeholder_indices, text_to_overwrite = (
+            batch_indices.to(target_device),
+            non_placeholder_indices.to(target_device),
+            text_to_overwrite.to(target_device),
+        )
+
+        # 3. Create the full embedding, already padded to the maximum position
+        final_embedding = torch.zeros(
+            batch_size, max_token_num, embed_dim, dtype=inputs_embeds.dtype, device=inputs_embeds.device
+        )
+        final_attention_mask = torch.zeros(
+            batch_size, max_token_num, dtype=attention_mask.dtype, device=inputs_embeds.device
+        )
+        final_input_ids = torch.full(
+            (batch_size, max_token_num), self.tokenizer.pad_token_id, dtype=input_ids.dtype, device=inputs_embeds.device
+        )
+
+        # 4. Fill the embeddings for text tokens
+        final_embedding[batch_indices, text_to_overwrite] = inputs_embeds[batch_indices, non_placeholder_indices]
+        final_attention_mask[batch_indices, text_to_overwrite] = attention_mask[batch_indices, non_placeholder_indices]
+        final_input_ids[batch_indices, text_to_overwrite] = input_ids[batch_indices, non_placeholder_indices]
+        
+        # Handle labels if provided
+        final_labels = None
+        if labels is not None:
+            labels = labels.to(target_device)
+            ignore_id = getattr(self.tokenizer, 'default_ignore_token', -100)
+            final_labels = torch.full(
+                (batch_size, max_token_num), ignore_id, dtype=input_ids.dtype, device=inputs_embeds.device
+            ).to(torch.long)
+            final_labels[batch_indices, text_to_overwrite] = labels[batch_indices, non_placeholder_indices]
+        
+        # 5. Fill the embeddings corresponding to the non-text features
+        feature_to_overwrite = torch.full(
+            (batch_size, max_token_num), True, dtype=torch.bool, device=inputs_embeds.device
+        )
+        feature_to_overwrite[batch_indices, text_to_overwrite] = False
+        
+        seq_indices = torch.arange(max_token_num).unsqueeze(0).to(target_device)
+        seq_indices = seq_indices.expand(batch_size, max_token_num)
+
+        if left_padding:
+            # exclude padding on the left
+            val = (max_token_num - seq_indices) <= (
+                token_placeholder_num.sum(-1) - (attention_mask == 0).long().sum(-1)
+            )[:, None]
+        else:
+            # exclude padding on the right
+            val = seq_indices < (token_placeholder_num.sum(-1) - (attention_mask == 0).long().sum(-1))[:, None]
+
+        feature_to_overwrite &= val
+
+        # Validate that we have the correct number of feature tokens
+        if feature_to_overwrite.sum() != num_nontext_tokens.sum():
+            raise ValueError(
+                f"The input provided to the model are wrong. The number of placeholder tokens is {num_placeholder_tokens} while"
+                f" the number of non-text features given to the model is {num_features}. This prevents correct indexing."
+            )
+
+        # Fill non-text features
+        final_embedding[feature_to_overwrite] = (
+            masked_nontext_features.contiguous().reshape(-1, embed_dim).to(target_device)
+        )
+        final_attention_mask |= feature_to_overwrite
+        
+        # Generate position IDs
         position_ids = (final_attention_mask.cumsum(-1) - 1).masked_fill_((final_attention_mask == 0), 1)
 
         return final_embedding, final_attention_mask, final_labels, position_ids, final_input_ids

@@ -11,12 +11,12 @@ export WORLD_SIZE=1
 export ASCEND_RT_VISIBLE_DEVICES=7
 
 code_dir=.
-dataset=librispeech-960
+dataset=slidespeech
 task=asr
-train_scp_file_path=./data/${dataset}/${task}/train/
-dev_scp_file_path=./data/${dataset}/${task}/dev/
-train_max_frame_length=800
-eval_max_frame_length=2000
+train_scp_file_path=/data/${dataset}/train_95/
+dev_scp_file_path=/data/${dataset}/dev_oracle_v1/
+train_max_frame_length=50000
+eval_max_frame_length=50000
 multitask_prompt_path=conf/multiprompt.jsonl
 ckpt_path=
 
@@ -31,7 +31,7 @@ firered_path=
 deepspeed_config=conf/ds_config.json
 
 # Choose Encoder
-encoder_name=whisper
+encoder_name=wavlm
 if [[ $encoder_name == "whisper" ]]
 then
     encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/Whisper/medium.pt

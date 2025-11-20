@@ -1,2 +1,3 @@
 {"task": "ASR", "prompt": "请转写音频为文字"}
 {"task": "hotword", "prompt": "请转写音频为文字,语音中可能含有以下关键词,{}"}
+{"task": "image", "prompt": "请转写音频为文字"}

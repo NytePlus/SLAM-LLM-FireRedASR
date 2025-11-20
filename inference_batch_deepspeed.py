@@ -152,23 +152,25 @@ def main(kwargs: DictConfig):
     gt_path = kwargs.get('decode_log') + f"_gt"
     pred_result = ""
     gt_result = ""
-    with torch.no_grad():
-        for step, batch in tqdm(enumerate(test_dataloader)):
-            for key in batch.keys():
-                batch[key] = batch[key].to(device) if isinstance(batch[key], torch.Tensor) else batch[key]
-            model_outputs = model.generate(**batch)
-            # model_outputs = model.generate_beamsearch(**batch)
-            if hasattr(model, 'tokenizer'):
-                output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
-            else:
-                output_text = tokenizer.batch_decode(model_outputs, skip_special_tokens=True)
-            print(output_text)
-            for key, text, target in zip(batch["keys"], output_text, batch["targets"]):
-                pred_result += key + " " + text.strip() + "\n"
-                gt_result += key + " " + target + "\n"
-    with open(pred_path, "a+") as pred, open(gt_path, "a+") as gt:
-        pred.write(pred_result)
-        gt.write(gt_result)
+    n, i = 100, 0
+    with open(pred_path, "w") as pred, open(gt_path, "w") as gt:
+        with torch.no_grad():
+            for step, batch in tqdm(enumerate(test_dataloader)):
+                # i += 1
+                # if i > n: break
+                for key in batch.keys():
+                    batch[key] = batch[key].to(device) if isinstance(batch[key], torch.Tensor) else batch[key]
+                print(batch)
+                model_outputs = model.generate(**batch)
+                # model_outputs = model.generate_beamsearch(**batch)
+                if hasattr(model, 'tokenizer'):
+                    output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
+                else:
+                    output_text = tokenizer.batch_decode(model_outputs, skip_special_tokens=True)
+                print(output_text)
+                for key, text, target in zip(batch["keys"], output_text, batch["targets"]):
+                    pred.write(key + " " + text.strip() + "\n")
+                    gt.write(key + " " + target + "\n")
 
 if __name__ == "__main__":
     main_hydra()
