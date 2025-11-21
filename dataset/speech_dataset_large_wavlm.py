@@ -401,8 +401,8 @@ class MultiTaskDynamicBatchDataset(IterableDataset):
             if not self.window_class(elem, self._buffer):
                 self._buffer.append(elem)
             else:
-                print(len(self._buffer))
-                print(sum([ len(_["input_ids"]) + (_["input_feature_length"] // 8 ) -1 for _ in self._buffer]))
+                # print(len(self._buffer))
+                # print(sum([ len(_["input_ids"]) + (_["input_feature_length"] // 8 ) -1 for _ in self._buffer]))
                 yield self._buffer
                 del self._buffer
                 self._buffer = [elem]

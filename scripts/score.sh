@@ -1,6 +1,6 @@
 ckpt_path=exp/20251110-1416-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_30_total_step_370000
 dataset=slidespeech
-task=asr
+task=asr_understand
 sub_test=test
 test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
 

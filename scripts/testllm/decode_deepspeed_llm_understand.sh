@@ -6,18 +6,19 @@ use_fp16=true
 freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
-eval_max_frame_length=50000
+eval_max_frame_length=10000
 ckpt_path=exp/20251110-1416-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_30_total_step_370000
 dataset=slidespeech
-task=asr
+task=asr_understand3
 sub_test=test
 test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
+multitask_prompt_path=conf/testllmprompt2.jsonl
 
 
 export LOCAL_RANK=0
 export RANK=0
 export WORLD_SIZE=1
-export ASCEND_RT_VISIBLE_DEVICES=7
+export ASCEND_RT_VISIBLE_DEVICES=0
 
 
 # Choose Encoder
@@ -88,6 +89,7 @@ deepspeed \
     ++dataset_config.inference_mode=true \
     ++dataset_config.eval_max_frame_length=$eval_max_frame_length \
     ++dataset_config.max_audio_length=30 \
+    ++dataset_config.multitask_prompt_path=$multitask_prompt_path \
     ++train_config.model_name=aispeech_asr \
     ++train_config.use_peft=$use_peft \
     ++train_config.freeze_llm=$freeze_llm \

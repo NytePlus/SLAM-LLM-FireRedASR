@@ -156,11 +156,11 @@ def main(kwargs: DictConfig):
     with open(pred_path, "w") as pred, open(gt_path, "w") as gt:
         with torch.no_grad():
             for step, batch in tqdm(enumerate(test_dataloader)):
-                # i += 1
-                # if i > n: break
+                i += 1
+                if i > n: break
                 for key in batch.keys():
                     batch[key] = batch[key].to(device) if isinstance(batch[key], torch.Tensor) else batch[key]
-                print(batch)
+                # print(batch)
                 model_outputs = model.generate(**batch)
                 # model_outputs = model.generate_beamsearch(**batch)
                 if hasattr(model, 'tokenizer'):
