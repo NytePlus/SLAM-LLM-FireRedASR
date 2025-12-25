@@ -424,6 +424,9 @@ if __name__ == '__main__':
             continue
         lab = normalize(array[1:], ignore_words, case_sensitive, split)
         rec = rec_set[fid]
+        # if fid == 'YTB+7QCWtKbN-T4+00086':
+        #     print(line, array, rec)
+        #     input('')
         if verbose:
             print('\nutt: %s' % fid)
 

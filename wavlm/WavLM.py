@@ -375,6 +375,8 @@ class WavLM(nn.Module):
             feature = (feature, res["layer_results"])
         return feature, res["padding_mask"]
 
+    def compute_feature_length(self, input_feature_length):
+        return (input_feature_length - 400) // 320 + 1
 
 class ConvFeatureExtractionModel(nn.Module):
     def __init__(

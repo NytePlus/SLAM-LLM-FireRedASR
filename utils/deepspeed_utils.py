@@ -29,7 +29,7 @@ from hydra.core.utils import _flush_loggers, configure_log
 
 # from dataset.speech_dataset_large import MultiTaskDynamicBatchDataset,MultiTaskDataset
 from utils.checkpoint_handler import save_model_checkpoint_deepspeed
-from utils.memory_utils import MemoryTrace
+from utils.memory_utils import MemoryTrace, NoTrace
 
 import wandb
 import logging
@@ -105,21 +105,30 @@ def deepspeed_join(group_join):
     Copy from wenet:https://github.com/wenet-e2e/wenet/blob/main/wenet/utils/executor.py#L64
     """
     try:
+        # 获取 timeout，如果没有 options，则使用默认值
+        timeout = getattr(group_join, 'options', None)
+        if timeout is not None:
+            timeout = timeout._timeout
+        else:
+            timeout = 30.0  # 默认 30 秒，可根据需求调整
+
         # NOTE(xcsong): Why we need a new group?
         #   Because Deepspeed has its own group where all the relevant communication
         #   operations are executed. If we add a communication operation that is not
         #   managed by Deepspeed in this group, it's highly likely to cause
         #   communication chaos, resulting in hard-to-troubleshoot hangs.
-        dist.monitored_barrier(group=group_join,
-                               timeout=group_join.options._timeout)
+        dist.monitored_barrier(group=group_join, timeout=timeout)
     except RuntimeError as e:
         local_rank = int(os.environ["LOCAL_RANK"])
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
-        logger.info("Detected uneven workload distribution."  +
-                     "Break current worker to manually join all workers, " +
-                     "world_size {}, current rank {}, current local_rank {}\n".
-                     format(world_size, rank, local_rank))
+        logger.info(
+            "Detected uneven workload distribution. " +
+            "Break current worker to manually join all workers, " +
+            "world_size {}, current rank {}, current local_rank {}\n".format(
+                world_size, rank, local_rank
+            )
+        )
         return True
     return False
 
@@ -209,15 +218,16 @@ def train(
     best_val_loss = float("inf")
     best_val_acc = 0.0
     total_step = 0
+    device = f"npu:{local_rank}"
     for epoch in range(train_config.num_epochs):
-        dist.barrier()
         group_join = dist.new_group(
-            backend="gloo", timeout=datetime.timedelta(seconds=7))
+            backend="gloo", timeout=datetime.timedelta(seconds=20))
+        dist.barrier()
         epoch_start_time = time.perf_counter()
-        with MemoryTrace() as memtrace:  # track the memory usage
+        with NoTrace() as memtrace:  # track the memory usage
             model.train()
-            total_loss = torch.tensor(0.0).to(f"npu:{local_rank}")
-            total_acc = 0
+            total_loss = torch.zeros(1, device=device, dtype=torch.bfloat16)
+            total_acc = torch.zeros(1, device=device, dtype=torch.bfloat16)
             if rank == 0:
                 if train_config.batching_strategy != "dynamic":
                     total_length = len(train_dataloader)//gradient_accumulation_steps
@@ -228,47 +238,59 @@ def train(
             for step, batch in enumerate(train_dataloader):
                 if train_config.batching_strategy == "dynamic" and deepspeed_join(group_join):
                     break
+                if rank == 0:
+                    print(step)
+                continue
+                
                 total_step += 1
                 for key in batch.keys():
                     batch[key] = (
-                        batch[key].to(f"npu:{local_rank}").half()
+                        batch[key].to(device).half()
                         if isinstance(batch[key], torch.Tensor)
-                        and batch[key].dtype == torch.float32
+                        and batch[key].dtype in [torch.float32, torch.float64]
                         else (
-                            batch[key].to(f"npu:{local_rank}")
+                            batch[key].to(device)
                             if isinstance(batch[key], torch.Tensor)
                             else batch[key]
                         )
                     )
                 with autocast(dtype=torch.bfloat16):
-                    # print(batch)
-                    outputs, *rest = model(**batch)
-                acc = rest[0] if rest else -1
+                    """
+                    input_ids: torch.int64
+                    attention_mask: torch.bool
+                    input_features: torch.float16
+                    input_feature_length: torch.int64
+                    labels: torch.int64
+                    """
+                    outputs, acc = model(**batch)
                 loss = outputs.loss
 
                 loss = loss / gradient_accumulation_steps
                 acc = acc / gradient_accumulation_steps
 
-                if log_config.use_wandb and step % log_config.log_interval == 0:
-                    if train_config.enable_fsdp or train_config.enable_ddp:
-                        if rank == 0:
-                            wandb.log(
-                                {
-                                    "train_inner/train_inner_loss": loss,
-                                    "train_inner/train_inner_accuracy": acc,
-                                },
-                                step=(epoch * total_length + step) if train_config.batching_strategy != "dynamic" else step + 1,
-                            )
-                    else:
-                        wandb.log(
-                            {
-                                "train_inner/train_inner_loss": loss,
-                                "train_inner/train_inner_accuracy": acc,
-                            },
-                            step=(epoch * total_length + step) if train_config.batching_strategy != "dynamic" else step + 1,
-                        )
-                total_loss += loss.detach().float()
-                total_acc += acc
+                acc_val = acc.detach().float().item()
+                loss_val = loss.detach().float().item()
+                # if log_config.use_wandb and step % log_config.log_interval == 0:
+                #     if train_config.enable_fsdp or train_config.enable_ddp:
+                #         if rank == 0:
+                #             wandb.log(
+                #                 {
+                #                     "train_inner/train_inner_loss": loss_val,
+                #                     "train_inner/train_inner_accuracy": acc_val,
+                #                 },
+                #                 step=(epoch * total_length + step) if train_config.batching_strategy != "dynamic" else step + 1,
+                #             )
+                #     else:
+                #         wandb.log(
+                #             {
+                #                 "train_inner/train_inner_loss": loss_val,
+                #                 "train_inner/train_inner_accuracy": acc_val,
+                #             },
+                #             step=(epoch * total_length + step) if train_config.batching_strategy != "dynamic" else step + 1,
+                #         )
+
+                total_loss += loss_val
+                total_acc += acc_val
 
                 # deepspeed should handle gradient accumulate
                 model.backward(loss)
@@ -277,10 +299,13 @@ def train(
                 if rank == 0:
                     if (step + 1) % gradient_accumulation_steps == 0 :
                         pbar.update(1)
-
-                    pbar.set_description(
-                        f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)  if train_config.batching_strategy != 'dynamic' else ''} completed (loss: {loss.detach().float()}, acc: {acc})"
-                    )
+                    
+                    desc = f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)  if train_config.batching_strategy != 'dynamic' else ''} completed (loss: {loss_val : .4f}, acc: {acc_val : .4f})"
+                    
+                    # if hasattr(outputs, 'embed_loss') and hasattr(outputs, 'quantity_loss'):
+                    #     desc += f" embed_loss: {outputs.embed_loss.detach().item() : .2f} quantity_loss: {outputs.quantity_loss.detach().item() : .2f}"
+                    pbar.set_description(desc)
+                del outputs
 
                 if total_step % train_config.validation_interval == 0 and train_config.run_validation:
                     eval_ppl, eval_epoch_loss, *rest = evaluation(
@@ -333,7 +358,6 @@ def train(
             if rank == 0:
                 pbar.close()
         # prof.stop()
-        dist.destroy_process_group(group_join)
         epoch_end_time = time.perf_counter() - epoch_start_time
         epoch_times.append(epoch_end_time)
         # Reducing total_loss across all devices if there's more than one npu device
@@ -374,20 +398,22 @@ def train(
 
         if rank == 0:
             logger.info(
-                f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s"
+                f"Epoch {epoch+1}: train_perplexity={train_perplexity.detach().item():.4f}, train_epoch_loss={train_epoch_loss.detach().item():.4f}, epoch time {epoch_end_time}s"
             )
 
-        if rank == 0:
-            logger.info(f"Max npu memory allocated was {memtrace.peak} GB")
-            logger.info(f"Max npu memory reserved was {memtrace.max_reserved} GB")
-            logger.info(f"Peak active npu memory was {memtrace.peak_active_gb} GB")
-            logger.info(f"npu Malloc retires : {memtrace.npu_malloc_retires}")
-            logger.info(
-                f"CPU Total Peak Memory consumed during the train (max): {memtrace.cpu_peaked + memtrace.cpu_begin} GB"
-            )
+        # if rank == 0:
+        #     logger.info(f"Max npu memory allocated was {memtrace.peak} GB")
+        #     logger.info(f"Max npu memory reserved was {memtrace.max_reserved} GB")
+        #     logger.info(f"Peak active npu memory was {memtrace.peak_active_gb} GB")
+        #     logger.info(f"npu Malloc retires : {memtrace.npu_malloc_retires}")
+        #     logger.info(
+        #         f"CPU Total Peak Memory consumed during the train (max): {memtrace.cpu_peaked + memtrace.cpu_begin} GB"
+        #     )
 
         # Update the learning rate as needed
         # lr_scheduler.step()
+    
+        dist.destroy_process_group(group_join)
 
     avg_epoch_time = sum(epoch_times) / len(epoch_times)
     avg_checkpoint_time = (
@@ -419,7 +445,7 @@ def train(
 
     return results
 
-
+# TODO: fix
 def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
     """
     Evaluates the model on the given dataloader
@@ -435,13 +461,14 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
     world_size = int(os.environ["WORLD_SIZE"])
     model.eval()
     eval_preds = []
-    eval_loss = 0.0  # Initialize evaluation loss
-    eval_acc = 0.0
     autocast = (
         torch.npu.amp.autocast if train_config.use_fp16 else nullcontext
     )  # (Fix:MZY): fix expected scalar type mismatch in norm
+    device = f"npu:{local_rank}"
+    eval_loss = torch.zeros(1, device=device, dtype=torch.bfloat16)  # Initialize evaluation loss
+    eval_acc = torch.zeros(1, device=device, dtype=torch.bfloat16)
 
-    with MemoryTrace() as memtrace:
+    with NoTrace():
         if train_config.batching_strategy != "dynamic":
             total_length = len(eval_dataloader)
             pbar = tqdm(colour="green", desc=f"Evaluating Epoch", total=total_length, dynamic_ncols=True)
@@ -450,10 +477,10 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
         for step, batch in enumerate(eval_dataloader):
             for key in batch.keys():
                 batch[key] = (
-                    batch[key].to(f"npu:{local_rank}").half()
-                    if isinstance(batch[key], torch.Tensor) and batch[key].dtype==torch.float32
+                    batch[key].to(device).half()
+                    if isinstance(batch[key], torch.Tensor) and batch[key].dtype in [torch.float32, torch.float64]
                     else (
-                        batch[key].to(f"npu:{local_rank}") if isinstance(batch[key], torch.Tensor) else batch[key]
+                        batch[key].to(device) if isinstance(batch[key], torch.Tensor) else batch[key]
                     )
                 )
             # Ensure no gradients are computed for this scope to save memory
@@ -464,8 +491,8 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
                 acc = rest[0] if rest else -1
                 loss = outputs.loss
 
-                eval_loss += loss.detach().float()
-                eval_acc += acc
+                eval_loss += loss.detach()
+                eval_acc += acc.detach()
             # Decode predictions and add to evaluation predictions list
             preds = torch.argmax(outputs.logits, -1)
             eval_preds.extend(
@@ -475,7 +502,7 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
             )
             pbar.update(1)
             pbar.set_description(
-                f"step: {step+1}/{total_length if train_config.batching_strategy != 'dynamic' else '' }, eval_loss: {eval_loss/(step+1):.4f}, eval_acc: {eval_acc/(step+1):.4f}"
+                f"step: {step+1}/{total_length if train_config.batching_strategy != 'dynamic' else '' }, eval_loss: {eval_loss.detach().item()/(step+1):.4f}, eval_acc: {eval_acc.detach().item()/(step+1):.4f}"
             )
     dist.barrier()
     # If there's more than one npu device, reduce evaluation loss across all devices
@@ -551,40 +578,6 @@ def get_parameter_dtypes(model):
     for name, parameter in model.named_parameters():
         parameter_dtypes[name] = parameter.dtype
     return parameter_dtypes
-
-
-def print_model_size(model, config, rank: int = 0) -> None:
-    """
-    log model name, the number of trainable parameters and initialization time.
-
-    Args:
-        model: The PyTorch model.
-        model_name (str): Name of the model.
-        init_time_start (float): Initialization start time.
-        init_time_end (float): Initialization end time.
-        rank (int, optional): Current process's rank. Defaults to 0.
-    """
-    if rank == 0:
-        logger.info(f"--> Model {config.model_name}")
-        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        logger.info(
-            f"--> {config.model_name} has {total_params / 1e6} Million params\n"
-        )
-
-
-def print_module_size(module, module_name, rank: int = 0) -> None:
-    """
-    Print module name, the number of trainable parameters and initialization time.
-
-    Args:
-        module: The PyTorch module.
-        module_name (str): Name of the model.
-        rank (int, optional): Current process's rank. Defaults to 0.
-    """
-    if rank == 0:
-        logger.info(f"--> Module {module_name}")
-        total_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
-        logger.info(f"--> {module_name} has {total_params / 1e6} Million params\n")
 
 
 def save_train_params(train_config, fsdp_config, rank):

@@ -8,7 +8,7 @@ export ASCEND_LAUNCH_BLOCKING=0
 export LOCAL_RANK=0
 export RANK=0
 export WORLD_SIZE=1
-export ASCEND_RT_VISIBLE_DEVICES=7
+export ASCEND_RT_VISIBLE_DEVICES=0
 
 code_dir=.
 dataset=slidespeech
@@ -22,7 +22,7 @@ ckpt_path=
 
 use_peft=false # For llm
 use_fp16=true
-freeze_encoder=false
+freeze_encoder=true
 freeze_projector=false
 freeze_llm=true
 
@@ -117,13 +117,13 @@ if [[ $use_peft == "true" && -n "$ckpt_path" ]];then
 fi
 
 # 单机Debug
-python \
-     $code_dir/finetune_deepspeed.py \
-     ++train_config.enable_fsdp=false \
-     ++train_config.enable_ddp=true \
-     ++train_config.use_fp16=$use_fp16 \
-     ++deepspeed_config=$deepspeed_config \
-     ${hydra_args}
+torchrun --nproc_per_node=1 \
+    $code_dir/finetune_deepspeed.py \
+    ++train_config.enable_fsdp=false \
+    ++train_config.enable_ddp=true \
+    ++train_config.use_fp16=$use_fp16 \
+    ++deepspeed_config=$deepspeed_config \
+    ${hydra_args}
 
 exit 0
 
@@ -139,25 +139,3 @@ exit 0
 #     ${hydra_args}
 
 # exit 0
-
-# 集群分布式训练
-
-HOST_FILE="/tmp/"${JobID}                        #生成的hostfile的完整文件名，$JobID调度系统会自动生成
- 
-echo "${VC_MASTER_HOSTS} slots=${GPU_PER_TASK}" > ${HOST_FILE}
-echo "${VC_WORKER_HOSTS}" | awk -F ',' -v gpu_num=$GPU_PER_TASK '{for (i=1; i<=NF; i++) print $i" slots="gpu_num}' >> ${HOST_FILE}
-
-deepspeed \
-    --node_rank=$RANK \
-    --master_addr $MASTER_ADDR \
-    --master_port $MASTER_PORT \
-    --hostfile $HOST_FILE \
-    --no_ssh \
-    $code_dir/finetune_deepspeed.py \
-    ++train_config.enable_fsdp=false \
-    ++train_config.enable_ddp=true \
-    ++train_config.use_fp16=$use_fp16 \
-    ++deepspeed_config=$deepspeed_config \
-    ${hydra_args}
-
-

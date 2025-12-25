@@ -7,35 +7,21 @@ freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
 eval_max_frame_length=50000
-ckpt_path=exp/20251217-1106-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_20_total_step_80000
-dataset=slidespeech
-task=asr
-sub_test=test
-test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
+ckpt_path=exp/20251128-1422-Chinese-LiPS-lorafalse_hotword_instruct/aispeech_asr_epoch_40_total_step_30000
+dataset=Chinese-LiPS
+task=hotword
+sub_test=train
+test_scp_file_path=/data/${dataset}/${task}_task/test/${sub_test}/
 
 deepspeed_config=conf/inference_config.json
 
-llm_name=vicuna-7b-v1.5
-if [[ $llm_name == "vicuna-7b-v1.5" ]]
-then
-    llm_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
-    llm_dim=4096
-elif [[ $llm_name == "Qwen2.5-7B-Instruct" ]]
-then
-    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-7B-Instruct
-    llm_dim=3584 
-elif [[ $llm_name == "Qwen2-7B" ]]
-then
-    llm_path=
-    llm_dim=3584 
-elif [[ $llm_name == "Qwen2.5-1.5B-Instruct" ]]
-then
-    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-1.5B-Instruct
-    llm_dim=3584 
-else
-    exit 1
-fi
+export LOCAL_RANK=0
+export RANK=0
+export WORLD_SIZE=1
+export ASCEND_RT_VISIBLE_DEVICES=0
 
+
+# Choose Encoder
 encoder_name=wavlm
 if [[ $encoder_name == "whisper" ]]
 then
@@ -59,7 +45,32 @@ else
     exit 1
 fi
 
+# Choose Projector
 projector=linear
+
+
+# Choose LLM
+llm_name=vicuna-7b-v1.5
+if [[ $llm_name == "vicuna-7b-v1.5" ]]
+then
+    llm_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
+    llm_dim=4096
+elif [[ $llm_name == "Qwen2.5-7B-Instruct" ]]
+then
+    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-7B-Instruct
+    llm_dim=3584 
+elif [[ $llm_name == "Qwen2-7B" ]]
+then
+    llm_path=
+    llm_dim=3584 
+elif [[ $llm_name == "Qwen2.5-1.5B-Instruct" ]]
+then
+    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-1.5B-Instruct
+    llm_dim=3584 
+else
+    exit 1
+fi
+
 
 decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
 deepspeed \

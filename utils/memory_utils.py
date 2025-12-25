@@ -6,6 +6,7 @@ import psutil
 import threading
 import torch_npu
 import torch
+import time
 
 def byte2gb(x):
     return int(x / 2**30)
@@ -37,6 +38,7 @@ class MemoryTrace:
 
             # can't sleep or will not catch the peak right (this comment is here on purpose)
             # time.sleep(0.001) # 1msec
+            # but if not sleep, it will slow down training process greatly.
 
             if not self.peak_monitoring:
                 break
@@ -62,3 +64,10 @@ class MemoryTrace:
         self.cpu_used = byte2gb(self.cpu_end - self.cpu_begin)
         self.cpu_peaked = byte2gb(self.cpu_peak - self.cpu_begin)
         # print(f"delta used/peak {self.used:4d}/{self.peaked:4d}")
+
+class NoTrace:
+    def __enter__(self):
+        pass
+
+    def __exit__(self, *exc):
+        pass

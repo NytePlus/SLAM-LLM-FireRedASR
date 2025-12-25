@@ -29,7 +29,10 @@ class ModelConfig:
     encoder_projector: str = "linear"
     firered_path :str = "/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/model/FireRedASR-LLM/model.pth.tar"
     encoder_projector_ds_rate: int = 2
-
+    vl_name: str = "Qwen2-vl-7B-Instruct"
+    vl_path: Optional[str] = None
+    vl_dim: int = 3584
+    cif_loss_weight: Optional[int] = None
 
 @dataclass
 class PeftConfig:
@@ -139,6 +142,9 @@ class DataConfig:
     add_noise: bool = False
     noise_prob: float = 0.3
     noises_path: str = "./data/noises.wavlist"
+    max_pixels: int = 256 * 256
+    image_processor_path: Optional[str] = None
+    include_transcript: bool = False
 
 @dataclass
 class LogConfig:

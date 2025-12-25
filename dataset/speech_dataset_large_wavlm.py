@@ -7,7 +7,6 @@ import re
 import soundfile
 from functools import partial
 import torch.distributed as dist
-import string
 import copy
 import numpy as np
 import copy
@@ -16,7 +15,6 @@ import os
 import json
 import random
 import logging
-import subprocess
 import torchaudio
 import torchaudio.functional as F
 import torchaudio.compliance.kaldi as kaldi
@@ -67,6 +65,22 @@ class MultiTaskDataset(IterableDataset):
         self.inference_mode = dataset_config.get("inference_mode", False)
         self.sample_rate = 16000
 
+        # -- image ---
+        self.image_processor = None
+        self.processor_path = dataset_config.get("image_processor_path")
+        self.max_pixels = dataset_config.get("max_pixels", 512 * 512)
+
+        # -- wav prompt ---
+        self.include_transcript = dataset_config.get("include_transcript")
+
+    def get_samples(self, item):
+        if self.include_transcript:
+            target_ids = self.tokenizer(item['target'])
+            samples = len(target_ids)
+        else:
+            samples = int(item['samples'])
+        return samples
+
     def balance_distribute_task(self, world_size, rank):
         multitask_task_path = os.path.join(self.data_path,"multitask.jsonl")
         tasks_with_samples = []
@@ -74,14 +88,14 @@ class MultiTaskDataset(IterableDataset):
         with open(multitask_task_path) as f_task:
             for data_index, line in enumerate(f_task):
                 item = json.loads(line)
-                samples = int(item['samples'])
+                samples = self.get_samples(item)
                     
                 tasks_with_samples.append({
                     'item': item,
                     'samples': samples,
                 })
 
-        tasks_with_samples.sort(key=lambda x: x['samples'], reverse=True)
+        tasks_with_samples.sort(key=lambda x: x['samples'], reverse=False)
     
         total_samples = sum(task['samples'] for task in tasks_with_samples)
         
@@ -113,7 +127,7 @@ class MultiTaskDataset(IterableDataset):
                 item = json.loads(line)
                 worker_id = data_index % world_size
                 total_tasks_all_workers[worker_id] += 1
-                total_samples_all_workers[worker_id] += int(item['samples'])
+                total_samples_all_workers[worker_id] += self.get_samples(item)
 
                 if data_index % world_size == rank:
                     tasks.append(item)
@@ -141,7 +155,8 @@ class MultiTaskDataset(IterableDataset):
 
         total_num_workers = num_workers * world_size
         worker_rank = rank * num_workers + worker_id 
-        current_tasks = self.naive_distribute_task(total_num_workers, worker_rank)
+
+        current_tasks = self.balance_distribute_task(total_num_workers, worker_rank)
 
         for item in current_tasks:
             audio_path = item["path"]
@@ -171,7 +186,8 @@ class MultiTaskDataset(IterableDataset):
                 wav_np = wav_tensor.squeeze(0).numpy()                       
 
             input_features = torch.from_numpy(audio_raw) 
-            input_features = torch.nn.functional.layer_norm(input_features , input_features.shape)
+            with torch.no_grad():
+                input_features = torch.nn.functional.layer_norm(input_features , input_features.shape)
             input_feature_length = input_features.shape[0]
             
             # feature postprocessing
@@ -181,40 +197,51 @@ class MultiTaskDataset(IterableDataset):
 
             prompt = random.choice(self.multitask_prompt_list[task])
             prompt = self.prompt_template.format(prompt)
+            # item[task] = ''
             if task in self.append_info_tasks:
                 prompt = prompt.format(item[task])
             prompt_ids = self.tokenizer.encode(prompt)
             prompt_length = len(prompt_ids)
             prompt_ids = torch.tensor(prompt_ids)
 
-            if  not self.inference_mode:
+            if not self.inference_mode:
                 target_ids = self.tokenizer.encode(target)
                 target_ids.append(self.tokenizer.eos_token_id)
                 target_ids = torch.tensor(target_ids)
-                input_ids = torch.cat([prompt_ids,target_ids])
+                input_ids = torch.cat([prompt_ids, target_ids])
+                result = {
+                    # 'transcript_ids': target_ids,
+                    # 'transcript_length': target_ids.shape[0],
+                }
             else:
                 input_ids = prompt_ids
+                result = {
+                    'target': target,
+                }
             attention_mask = input_ids.ge(-1)  
-            result = {
+            result.update({
                     "input_ids": input_ids,
                     "attention_mask": attention_mask ,
                     "input_features": input_features ,
                     "input_feature_length":input_feature_length,
                     'key': key,
-                    'target': target,
-            }
+            })
 
             if task == 'image':
-                from transformers import AutoProcessor
                 from PIL import Image
-
-                processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
-                image_processor = processor.image_processor
+                import math
                 image = Image.open(item['image']).convert('RGB')
-                image_tensor = image_processor(image, return_tensors="pt")
-                result['image_tensor'] = image_tensor
+        
+                current_pixels = image.width * image.height
                 
-            if  not self.inference_mode:
+                if current_pixels > self.max_pixels:
+                    scale = math.sqrt(self.max_pixels / current_pixels)
+                    new_size = (int(image.width * scale), int(image.height * scale))
+                    image = image.resize(new_size, Image.Resampling.LANCZOS)
+                
+                result['image'] = image
+                
+            if not self.inference_mode:
                 labels = copy.deepcopy(input_ids)
                 labels[:prompt_length] = self.tokenizer.default_ignore_token
                 result["labels"] = labels
@@ -270,26 +297,39 @@ class MultiTaskDataset(IterableDataset):
     
     def collator(self, samples):
         assert samples is not None
-        if self.inference_mode:
-            padding_style = "left"
-        else:
-            padding_style = "right"
-        padding_style = "left"
-        input_feature_length = torch.stack([torch.tensor(s["input_feature_length"]) for s in samples])
+        padding_style = "right"
+
+        # --- input id ---
         input_ids_max_length = max([s['input_ids'].shape[0] for s in samples])
         input_ids = torch.stack([self.pad(s['input_ids'], input_ids_max_length, self.tokenizer.pad_token_id,padding_style = padding_style)
                                     for s in samples])
         attention_mask = torch.stack([self.pad(s['attention_mask'], input_ids_max_length, False,padding_style = padding_style)
                                         for s in samples])
+        
+        # --- input feature ---
         input_features_max_length = max([s['input_features'].shape[0] for s in samples])
         input_features = torch.stack([self.pad(s['input_features'], input_features_max_length, 0.0)
                                 for s in samples])
+        input_feature_length = torch.stack([torch.tensor(s["input_feature_length"]) for s in samples])
+
         result = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask ,
                 "input_features": input_features ,
                 "input_feature_length":input_feature_length,
         }
+
+        # --- transcript id ---
+        if self.include_transcript:
+            transcript_ids_max_length = max([s['transcript_ids'].shape[0] for s in samples])
+            transcript_ids_length = torch.stack([torch.tensor(s["transcript_length"]) for s in samples])
+            transcript_ids = torch.stack([self.pad(s['transcript_ids'], transcript_ids_max_length, 0)
+                                        for s in samples])
+
+            result["transcript_ids"] = transcript_ids
+            result["transcript_length"] = transcript_ids_length
+
+        self.process_samples(samples)
        
         if self.inference_mode:
             result["keys"] = [s['key'] for s in samples]
@@ -297,7 +337,11 @@ class MultiTaskDataset(IterableDataset):
         else:
             result["labels"] = torch.stack([self.pad(s['labels'], input_ids_max_length, self.tokenizer.default_ignore_token,padding_style = padding_style)
                                 for s in samples])
+        # print(result['input_ids'].shape, result['input_features'].shape)
         return result
+
+    def process_samples(self, samples):
+        return samples
 
     def spec_aug(self, x, num_t_mask=2, num_f_mask=2, max_t=50, max_f=10):
         """ Do spec augmentation
@@ -397,18 +441,25 @@ class MultiTaskDynamicBatchDataset(IterableDataset):
         self._buffer = []
 
     def __iter__(self):
+        max_sum_len, max_l = 0, 0
+        rank = int(os.environ["LOCAL_RANK"])
         for elem in self.dp:
             if not self.window_class(elem, self._buffer):
                 self._buffer.append(elem)
             else:
-                # print(len(self._buffer))
-                # print(sum([ len(_["input_ids"]) + (_["input_feature_length"] // 8 ) -1 for _ in self._buffer]))
-                yield self._buffer
-                del self._buffer
+                # if rank == 0:
+                #     l = max([ len(_["input_ids"]) + (_["input_feature_length"] // 8 ) -1 for _ in self._buffer])
+                #     sum_len = sum([ len(_["input_ids"]) + (_["input_feature_length"] // 8 ) -1 for _ in self._buffer])
+                #     if sum_len > max_sum_len:
+                #         max_sum_len = sum_len
+                #     if l > max_l:
+                #         max_l = l
+                #     print(max_sum_len, sum_len, max_l, l)
+                buffer_to_yield = self._buffer
                 self._buffer = [elem]
+                yield buffer_to_yield
         if len(self._buffer) > 0:
             yield self._buffer
-        del self._buffer
         self._buffer = []
          
     
@@ -426,7 +477,6 @@ def get_speech_dataset(dataset_config, tokenizer, split):
         ds_config.wav_reverb = False
         ds_config.add_noise = False
     dataset = MultiTaskDataset(ds_config, tokenizer, split)
-    print(f'ds rate: {ds_config.ds_rate}')
     if split == "train":
         dataset = MultiTaskDynamicBatchDataset(dataset,partial(window_class, max_frame_length=ds_config.train_max_frame_length, ds_rate=ds_config.ds_rate))
     else:

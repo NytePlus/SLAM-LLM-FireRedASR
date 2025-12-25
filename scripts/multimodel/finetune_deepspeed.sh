@@ -6,18 +6,18 @@ export TASK_QUEUE_ENABLE=2
 export ASCEND_LAUNCH_BLOCKING=0
 
 code_dir=.
-dataset=slidespeech
-task=asr
-train_scp_file_path=/data/${dataset}/train_95/
-dev_scp_file_path=/data/${dataset}/dev_oracle_v1/
-train_max_frame_length=15000
-eval_max_frame_length=15000
+dataset=Chinese-LiPS
+task=image
+train_scp_file_path=/data/${dataset}/image_task/test/train/
+dev_scp_file_path=/data/${dataset}/image_task/test/test/
+train_max_frame_length=40000
+eval_max_frame_length=40000
 multitask_prompt_path=conf/multiprompt.jsonl
-ckpt_path=
+ckpt_path=exp/20251123-0135-Chinese-LiPS-lorafalse_image_instruct/aispeech_asr_epoch_50_total_step_60000
 
 use_peft=false # For llm
 use_fp16=true
-freeze_encoder=true
+freeze_encoder=false
 freeze_projector=false
 freeze_llm=true
 
@@ -75,6 +75,12 @@ else
     exit 1
 fi
 
+vl_name=Qwen2-VL-7B-Instruct
+vl_path=/models/Qwen2-VL-7B-Instruct
+vl_dim=3584
+
+prompt_style="<|im_start|>user\n<speech><image>{}<|im_end|>\n<|im_start|>assistant\n"
+
 output_dir=${code_dir}/exp/$(date +"%Y%m%d-%H%M")-$dataset-lora${use_peft}_${task}_instruct
 hydra_args="
 hydra.run.dir=$output_dir \
@@ -86,6 +92,9 @@ hydra.run.dir=$output_dir \
 ++model_config.llm_path=$llm_path \
 ++model_config.llm_dim=$llm_dim \
 ++model_config.firered_path=$firered_path \
+++model_config.vl_name=$vl_name \
+++model_config.vl_path=$vl_path \
+++model_config.vl_dim=$vl_dim \
 ++dataset_config.file=$file \
 ++dataset_config.train_max_frame_length=$train_max_frame_length \
 ++dataset_config.eval_max_frame_length=$eval_max_frame_length \
@@ -94,20 +103,22 @@ hydra.run.dir=$output_dir \
 ++dataset_config.spec_aug=false \
 ++dataset_config.wav_reverb=false \
 ++dataset_config.add_noise=false \
+++dataset_config.prompt_style='$prompt_style' \
+++dataset_config.image_processor_path=$vl_path \
 ++train_config.model_name=aispeech_asr \
-++train_config.num_epochs=150 \
+++train_config.num_epochs=50 \
 ++train_config.use_peft=$use_peft \
 ++train_config.freeze_llm=$freeze_llm \
 ++train_config.freeze_encoder=$freeze_encoder \
 ++train_config.freeze_projector=$freeze_projector \
 ++train_config.batching_strategy=dynamic \
-++train_config.validation_interval=50000 \
+++train_config.validation_interval=10000 \
 ++train_config.num_workers_dataloader=4 \
 ++train_config.output_dir=$output_dir \
 ++metric=acc \
 "
 
-if [[ $use_peft == "true" && -n "$ckpt_path" ]];then
+if [[ -n "$ckpt_path" ]];then
     hydra_args+=" ++ckpt_path=$ckpt_path/pytorch_model.bin"
 fi
 

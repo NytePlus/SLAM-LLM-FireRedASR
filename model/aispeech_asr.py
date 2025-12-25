@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model.adapter import  Adapter 
+from model.adapter import Adapter, CIFAdapter, FunasrCIFAdapter
 from model.conformer_encoder import ConformerEncoder
 
 import os
@@ -10,7 +10,7 @@ import logging
 import types
 from typing import List, Optional, Tuple, Union
 
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from transformers import AutoTokenizer, AutoConfig, LlamaForCausalLM
 
 from peft import PeftModel, LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from wavlm.WavLM import WavLM, WavLMConfig
@@ -18,8 +18,8 @@ from utils.metric import compute_accuracy
 from utils.config_utils import generate_peft_config
 from utils.model_utils import print_model_size, print_module_size
 from utils.npu_flash_attn import patch_npu_flash_attn
-from collections import OrderedDict
 logger = logging.getLogger(__name__)
+
 def extract_variable_length_features(self, x: torch.Tensor):
         """
         x : torch.Tensor, shape = (batch_size, n_mels, n_ctx)
@@ -43,6 +43,16 @@ def setup_tokenizer(train_config, model_config, **kwargs):
     # Load the tokenizer and add special tokens
     tokenizer = AutoTokenizer.from_pretrained(model_config.llm_path)
     tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    DEFAULT_SPEECH_TOKEN = "<speech>"
+    DEFAULT_IMAGE_TOKEN = "<image>"
+    DEFAULT_IGNORE_TOKEN = -100
+    special_tokens_dict = {"additional_special_tokens": [DEFAULT_SPEECH_TOKEN, DEFAULT_IMAGE_TOKEN]}
+    tokenizer.add_special_tokens(special_tokens_dict)
+
+    tokenizer.default_ignore_token = DEFAULT_IGNORE_TOKEN
+    tokenizer.default_speech_token = tokenizer.convert_tokens_to_ids(DEFAULT_SPEECH_TOKEN)
+    tokenizer.default_image_token = tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_TOKEN)
     return tokenizer
 
 
@@ -88,8 +98,16 @@ def setup_encoder_projector(train_config, model_config, **kwargs):
         raise NotImplementedError(
             f"Unsupported encoder_name: '{encoder_name}'. "
         )
-    encoder_projector = Adapter(encoder_dim,model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
-    print_module_size(encoder_projector, "adapter", int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
+
+    projector_name = model_config.encoder_projector
+    if projector_name == "linear":
+        encoder_projector = Adapter(encoder_dim,model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
+    elif projector_name == "CIF":
+        encoder_projector = CIFAdapter(encoder_dim, model_config["llm_dim"])
+    elif projector_name == "FunasrCIF":
+        encoder_projector = FunasrCIFAdapter(encoder_dim, model_config["llm_dim"])
+
+    print_module_size(encoder_projector, f"{projector_name} adapter", int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
 
     if train_config.freeze_projector:
         for name, param in encoder_projector.named_parameters():
@@ -103,12 +121,14 @@ def setup_encoder_projector(train_config, model_config, **kwargs):
 def setup_llm(train_config, model_config, **kwargs):
     use_cache = False if train_config.enable_fsdp or train_config.enable_ddp else None
 
-    model = AutoModelForCausalLM.from_pretrained(
-                model_config.llm_path,
-                # load_in_8bit=True if train_config.quantization else None,
-                # device_map="auto" if train_config.quantization else None,
-                use_cache=use_cache
-            )
+    config = AutoConfig.from_pretrained(model_config.llm_path)
+    config.use_cache=use_cache
+    config._attn_implementation='flash_attention_2'
+
+    model = LlamaForCausalLM.from_pretrained(
+        model_config.llm_path,
+        config=config,
+    )
 
     print_module_size(model, model_config.llm_name, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
 
@@ -130,34 +150,33 @@ def setup_llm(train_config, model_config, **kwargs):
     print_module_size(model, model_config.llm_name, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
     return model
 
+def setup_vl(train_config, model_config, **kwargs):
+    if model_config.vl_path is None:
+        return None, None
+    from transformers import Qwen2VLForConditionalGeneration
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        model_config.vl_path,
+        # device_map="cpu"fc 
+    ).visual
+    model.eval()
+    image_encoder_projector = Adapter(model_config['vl_dim'], model_config["llm_dim"], downsample_rate=1)
+
+    print_module_size(image_encoder_projector, "image adapter", int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
+    print_module_size(model, model_config.vl_name, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
+    return model, image_encoder_projector
+
 
 def model_factory(train_config, model_config, **kwargs):
     tokenizer = setup_tokenizer(train_config, model_config, **kwargs)
-    DEFAULT_SPEECH_TOKEN = "<speech>"
-    DEFAULT_IMAGE_TOKEN = "<image>"
-    DEFAULT_IGNORE_TOKEN = -100
-    special_tokens_dict = {"additional_special_tokens": [DEFAULT_SPEECH_TOKEN, DEFAULT_IMAGE_TOKEN]}
-    tokenizer.add_special_tokens(special_tokens_dict)
-
-    tokenizer.default_ignore_token = DEFAULT_IGNORE_TOKEN
-    tokenizer.default_speech_token = tokenizer.convert_tokens_to_ids(DEFAULT_SPEECH_TOKEN)
-    tokenizer.default_image_token = tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_TOKEN)
     
+    # TODO: image encoder projector
+    image_encoder, image_encoder_projector = setup_vl(train_config, model_config, **kwargs)
+
     # llm
     llm = setup_llm(train_config, model_config, **kwargs)
 
     # encoder
     encoder = setup_encoder(train_config, model_config, **kwargs)
-
-    # TODO: image encoder projector
-    # from transformers import Qwen2VLForConditionalGeneration
-    # model = Qwen2VLForConditionalGeneration.from_pretrained(
-    #     "Qwen/Qwen2-VL-7B-Instruct",
-    #     torch_dtype=torch.float16,
-    #     device_map="auto"
-    # )
-    # image_encoder = model.vision_model
-    # image_encoder_projector = Adapter(128, model_config["llm_dim"], 1)
 
     # projector
     encoder_projector = setup_encoder_projector(
@@ -171,8 +190,9 @@ def model_factory(train_config, model_config, **kwargs):
         tokenizer,
         train_config,
         model_config,
-        # image_encoder=image_encoder,
-        # image_encoder_projector=image_encoder_projector,
+        image_encoder=image_encoder,
+        image_encoder_projector=image_encoder_projector,
+        cif_loss_weight=model_config.cif_loss_weight,
         **kwargs,
     )
     firered_path = model_config.get( "firered_path", None)
@@ -181,7 +201,7 @@ def model_factory(train_config, model_config, **kwargs):
         firered_dict = torch.load(firered_path, map_location="cpu")
         model.load_state_dict(firered_dict["model_state_dict"], strict=False)
 
-    ckpt_path = kwargs.get( "ckpt_path", None)
+    ckpt_path = kwargs.get("ckpt_path", None)
     if ckpt_path is not None and ckpt_path != '':
         logger.info("loading other parts from: {}".format(ckpt_path))
         ckpt_dict = torch.load(ckpt_path, map_location="cpu")
@@ -245,6 +265,7 @@ class slam_model_asr(torch.nn.Module):
         model_config,
         image_encoder = None,
         image_encoder_projector = None,
+        cif_loss_weight = None,
         **kwargs,
     ):
         super().__init__()
@@ -283,50 +304,100 @@ class slam_model_asr(torch.nn.Module):
             for item in self.modules():
                 if isinstance(item, nn.LayerNorm):
                     item.forward = types.MethodType(new_forward, item)
+        
+        # cif loss weight
+        self.cif_loss_weight = cif_loss_weight
+
+    # --- TODO: 融入图像模态 ---
+    def encode_image(self, image_embed, pixel_values_length, grid_thw, inputs_embeds, attention_mask, labels, input_ids):
+        batch_size, _, _ = image_embed.shape
+        
+        image_encoder_outs = self.image_encoder(image_embed, grid_thw=grid_thw) # (batch * seq_len, vl_dim)
+        image_encoder_feature_length = pixel_values_length // 4
+
+        _, vl_dim = image_encoder_outs.shape
+        image_encoder_outs = image_encoder_outs.reshape(batch_size, -1, vl_dim) # (batch, seq_len, vl_dim)
+
+        image_projector_outs = self.image_encoder_projector(image_encoder_outs) # (batch, seq_len, llm_dim)
+
+        # print(f'token length(audio+text|image): {inputs_embeds.shape[1]}|{image_projector_outs.shape[1]}|')
+        inputs_embeds, attention_mask, labels, position_ids, _ = self._merge_input_ids_with_nontext_features(
+                image_projector_outs, image_encoder_feature_length, inputs_embeds, input_ids, attention_mask, labels, self.tokenizer.default_image_token
+            )
+
+        return inputs_embeds, attention_mask, labels, position_ids
+    # --- end ---
 
     def forward(self,
                 input_ids: torch.LongTensor = None,
                 input_features: Optional[torch.Tensor] = None,
+                pixel_values: Optional[torch.Tensor] = None,
+                pixel_values_length: Optional[torch.Tensor] = None,
+                grid_thw: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 input_feature_length : Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.LongTensor] = None,
-                past_key_values: Optional[List[torch.FloatTensor]] = None,
-                inputs_embeds: Optional[torch.FloatTensor] = None,
                 labels: Optional[torch.LongTensor] = None,
-                use_cache: Optional[bool] = None,
-                output_attentions: Optional[bool] = None,
-                output_hidden_states: Optional[bool] = None,
-                return_dict: Optional[bool] = None,
+                transcript_ids: Optional[torch.Tensor] = None,
+                transcript_length: Optional[torch.Tensor] = None,
                 ):
-        if type(self.encoder).__name__ == 'WavLM':
-            encoder_outs = self.encoder.extract_features(input_features)[0]
-            encoder_feature_length = torch.full((encoder_outs.shape[0],), encoder_outs.shape[1], device=encoder_outs.device)
-            projector_outs = self.encoder_projector(encoder_outs)
+        
+        # print(input_features.shape, input_ids.shape, pixel_values.shape) # torch.Size([2, 217101]) torch.Size([2, 153]) torch.Size([2, 24, 1176])
 
+        if type(self.encoder).__name__ == 'WavLM':
+            encoder_outs, _ = self.encoder.extract_features(input_features)
+            encoder_feature_length = self.encoder.compute_feature_length(input_feature_length)
+            # print(input_feature_length, encoder_feature_length) # tensor([199130, 217101], device='npu:0') tensor([678, 622], device='npu:0')
         elif type(self.encoder).__name__ == 'ConformerEncoder':
             encoder_outs,encoder_feature_length,_ = self.encoder(input_features,input_feature_length) # bs*seq*dim
-            projector_outs = self.encoder_projector(encoder_outs)
-
         elif type(self.encoder).__name__ == 'AudioEncoder':
             encoder_outs = self.encoder(input_features) # bs*seq*dim
-            projector_outs = self.encoder_projector(encoder_outs)
             encoder_feature_length = input_feature_length // 2
-            
-        projector_feature_length = encoder_feature_length // self.encoder_projector.ds
+        
+        if type(self.encoder_projector).__name__ == 'Adapter':
+            projector_outs = self.encoder_projector(encoder_outs)
+            projector_feature_length = encoder_feature_length // self.encoder_projector.ds
+        elif type(self.encoder_projector).__name__ in ['CIFAdapter', 'FunasrCIFAdapter']:
+            projector_outs, projector_feature_length, quantity_loss = self.encoder_projector(encoder_outs, encoder_feature_length, transcript_length)
+            # print('CIFAdapter: ', encoder_outs.shape, encoder_feature_length, transcript_length, projector_outs.shape, projector_feature_length)
         
         # print("\n","End",inputs_embeds, attention_mask, labels, position_ids,encoder_feature_length,projector_feature_length)
         inputs_embeds = self.llm.get_input_embeddings()(input_ids)
-        inputs_embeds, attention_mask, labels, position_ids, _ = self._merge_input_ids_with_audio_features(
+        # print(projector_outs.shape, inputs_embeds.shape) # torch.Size([2, 339, 4096]) torch.Size([2, 153, 4096])
+
+        inputs_embeds, attention_mask, labels, position_ids, input_ids = self._merge_input_ids_with_audio_features(
                 projector_outs, projector_feature_length, inputs_embeds, input_ids, attention_mask, labels
             )
-        # print("\n","Before", projector_outs.shape, input_feature_length,encoder_feature_length,projector_feature_length)
-        # exit(1)
-        model_outputs = self.llm(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels,position_ids=position_ids)
+        
+        if self.image_encoder is not None:
+            inputs_embeds, attention_mask, labels, position_ids = self.encode_image(
+                pixel_values, pixel_values_length, grid_thw, 
+                inputs_embeds, attention_mask, labels, input_ids)
+
+        model_outputs = self.llm(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels, position_ids=position_ids)
         acc = -1
         if self.metric:
             with torch.no_grad():
                 preds = torch.argmax(model_outputs.logits, -1)
                 acc = compute_accuracy(preds.detach()[:, :-1], labels.detach()[:, 1:], ignore_label=self.tokenizer.default_ignore_token)
+                # vocab_size = self.tokenizer.vocab_size
+                # print('predict: ', self.tokenizer.decode(preds[0, :-1].clamp(0, vocab_size-1)))
+                # print('gt: ', self.tokenizer.decode(labels[0, 1:].clamp(0, vocab_size-1)))
+
+        if transcript_length is not None:
+            print('transcript is not None')
+            transcript_embed = self.llm.get_input_embeddings()(transcript_ids)
+            mask = torch.arange(transcript_ids.size(1), device=transcript_ids.device).unsqueeze(0) < transcript_length.unsqueeze(1)
+            mask = mask.unsqueeze(-1)  # [B, T, 1]
+
+            assert projector_outs.shape[1] == transcript_embed.shape[1], f'Adapter not align: Projector out {projector_outs.shape[1]}, Transcript {transcript_embed.shape[1]}'
+            mse = (projector_outs - transcript_embed) ** 2
+            mse = mse * mask
+
+            embed_loss = mse.sum() / (mask.sum() + 1e-8)
+            model_outputs.embed_loss = embed_loss
+            model_outputs.quantity_loss = quantity_loss
+            model_outputs.loss = model_outputs.loss + self.cif_loss_weight * embed_loss + 0.05 * quantity_loss
 
         return model_outputs, acc
     
@@ -334,7 +405,9 @@ class slam_model_asr(torch.nn.Module):
     def generate(self,
                 input_ids: torch.LongTensor = None,
                 input_features: Optional[torch.Tensor] = None,
-                image_tensor: Optional[torch.Tensor] = None,
+                pixel_values: Optional[torch.Tensor] = None,
+                pixel_values_length: Optional[torch.Tensor] = None,
+                grid_thw: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 input_feature_length : Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.LongTensor] = None,
@@ -350,8 +423,8 @@ class slam_model_asr(torch.nn.Module):
         
 
         if type(self.encoder).__name__ == 'WavLM':
-            encoder_outs = self.encoder.extract_features(input_features)[0]
-            encoder_feature_length = torch.full((encoder_outs.shape[0],), encoder_outs.shape[1], device=encoder_outs.device)
+            encoder_outs, _ = self.encoder.extract_features(input_features)
+            encoder_feature_length = self.encoder.compute_feature_length(input_feature_length)
             projector_outs = self.encoder_projector(encoder_outs)
 
         elif type(self.encoder).__name__ == 'ConformerEncoder':
@@ -368,18 +441,10 @@ class slam_model_asr(torch.nn.Module):
         inputs_embeds, attention_mask, labels, position_ids, input_ids = self._merge_input_ids_with_audio_features(
                 projector_outs, projector_feature_length, inputs_embeds, input_ids, attention_mask, labels
             )
-
-        # --- TODO: 融入图像模态 ---
-        # image_encoder_outs = self.image_encoder.extract_features(audio_features)[0]
-        # encoder_feature_length = torch.full((image_encoder_outs.shape[0],), image_encoder_outs.shape[1], device=image_encoder_outs.device)
-        # image_projector_outs = self.encoder_projector(image_encoder_outs)
-
-        # image_projector_feature_length = encoder_feature_length // self.image_encoder_projector.ds
-        # inputs_embeds = self.llm.get_input_embeddings()(input_ids)
-        # inputs_embeds, attention_mask, labels, position_ids, _ = self._merge_input_ids_with_nontext_features(
-        #         image_projector_outs, image_projector_feature_length, inputs_embeds, input_ids, attention_mask, labels, self.tokenizer.default_image_token
-        #     )
-        # --- end ---
+        if self.image_encoder is not None:
+            inputs_embeds, attention_mask, labels, position_ids = self.encode_image(
+                pixel_values, pixel_values_length, grid_thw, 
+                inputs_embeds, attention_mask, labels, input_ids)
 
         model_outputs = self.llm.generate(
             inputs_embeds=inputs_embeds,
@@ -491,7 +556,8 @@ class slam_model_asr(torch.nn.Module):
         audio_features_mask = torch.arange(max_audio_tokens).expand(num_audios, max_audio_tokens).to(
             num_audio_tokens.device
         ) < num_audio_tokens.unsqueeze(1)
-        masked_audio_features = audio_features[audio_features_mask].view(-1, embed_dim)
+
+        masked_audio_features = audio_features[audio_features_mask].view(-1, embed_dim).contiguous()
         batch_size, sequence_length = input_ids.shape
         _left_padding = torch.any(attention_mask[:, 0] == 0)
         _right_padding = torch.any(attention_mask[:, -1] == 0)
@@ -599,12 +665,12 @@ class slam_model_asr(torch.nn.Module):
 
     def _merge_input_ids_with_nontext_features(
             self, 
-            nontext_features, 
-            num_nontext_tokens, 
-            inputs_embeds, 
-            input_ids, 
-            attention_mask, 
-            labels, 
+            nontext_features, # (b, t1, llm_dim)
+            num_nontext_tokens, # (b)
+            inputs_embeds, # (b, t2, llm_dim)
+            input_ids, # (b, t2)
+            attention_mask, # (b, t2)
+            labels, # (b, t2)
             placeholder_token_id
         ):
         """
@@ -634,10 +700,11 @@ class slam_model_asr(torch.nn.Module):
         num_features, max_feature_tokens, embed_dim = nontext_features.shape
         
         # Create mask for valid non-text features
+
         nontext_features_mask = torch.arange(max_feature_tokens).expand(num_features, max_feature_tokens).to(
             num_nontext_tokens.device
         ) < num_nontext_tokens.unsqueeze(1)
-        masked_nontext_features = nontext_features[nontext_features_mask].view(-1, embed_dim)
+        masked_nontext_features = nontext_features[nontext_features_mask].view(-1, embed_dim).contiguous()
         
         batch_size, sequence_length = input_ids.shape
         

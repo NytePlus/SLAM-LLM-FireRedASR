@@ -2,6 +2,7 @@ import os
 import random
 from typing import Optional
 import logging
+from contextlib import nullcontext
 
 import hydra
 import logging
@@ -32,6 +33,7 @@ class RunConfig:
     ckpt_path: Optional[str] = field(
         default=None, metadata={"help": "The path to projector checkpoint"}
     )
+    deepspeed_config : str =""
 
 
 
@@ -57,10 +59,11 @@ def main(kwargs: DictConfig):
     # train_config, fsdp_config, model_config, log_config = TRAIN_CONFIG(), FSDP_CONFIG(), MODEL_CONFIG(), LOG_CONFIG()
     # update_config((train_config, fsdp_config, model_config, log_config), **kwargs)
 
-    train_config, model_config, log_config, dataset_config = kwargs.train_config, \
+    train_config, model_config, log_config, dataset_config, deepspeed_config = kwargs.train_config, \
                                                                           kwargs.model_config, \
                                                                           kwargs.log_config, \
-                                                                          kwargs.dataset_config
+                                                                          kwargs.dataset_config, \
+                                                                          kwargs.deepspeed_config
     del kwargs.train_config
     del kwargs.model_config
     del kwargs.log_config
@@ -124,6 +127,9 @@ def main(kwargs: DictConfig):
     device = torch.device(f"npu:{local_rank}" if torch.npu.is_available() else "cpu") # FIX(MZY): put the whole model to device.
     model.to(device)
     model.eval()
+    model, _, _, _ = deepspeed.initialize(
+        model=model, model_parameters=None, config=deepspeed_config
+    )
     logger.info("dataset_config: {}".format(dataset_config))
     dataset_test = get_preprocessed_dataset(
         tokenizer,
@@ -146,6 +152,8 @@ def main(kwargs: DictConfig):
             # sampler=sampler
             # multiprocessing_context=mp.get_context("spawn")
         )
+    
+    autocast = torch.npu.amp.autocast if train_config.use_fp16 else nullcontext
 
     logger.info("=====================================")
     pred_path = kwargs.get('decode_log') + f"_pred"
@@ -156,18 +164,27 @@ def main(kwargs: DictConfig):
     with open(pred_path, "w") as pred, open(gt_path, "w") as gt:
         with torch.no_grad():
             for step, batch in tqdm(enumerate(test_dataloader)):
-                i += 1
-                if i > n: break
+                # i += 1
+                # if i > n: break
                 for key in batch.keys():
-                    batch[key] = batch[key].to(device) if isinstance(batch[key], torch.Tensor) else batch[key]
-                # print(batch)
-                model_outputs = model.generate(**batch)
+                    batch[key] = (
+                        batch[key].to(device).half()
+                        if isinstance(batch[key], torch.Tensor)
+                        and batch[key].dtype in [torch.float32, torch.float64]
+                        else (
+                            batch[key].to(device)
+                            if isinstance(batch[key], torch.Tensor)
+                            else batch[key]
+                        )
+                    )
+                with autocast(dtype=torch.bfloat16):
+                    model_outputs = model.generate(**batch)
                 # model_outputs = model.generate_beamsearch(**batch)
                 if hasattr(model, 'tokenizer'):
                     output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
                 else:
                     output_text = tokenizer.batch_decode(model_outputs, skip_special_tokens=True)
-                print(output_text)
+                # print(output_text)
                 for key, text, target in zip(batch["keys"], output_text, batch["targets"]):
                     pred.write(key + " " + text.strip() + "\n")
                     gt.write(key + " " + target + "\n")

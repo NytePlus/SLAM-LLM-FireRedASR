@@ -1,0 +1,22 @@
+FROM hub.szaic.com/sjtu-base/sjtu_base-pytorch-for-ascend:cann8.2rc1-torch2.6.0-py3.10
+
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+ && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
+
+RUN pip install whisper_normalizer transformers==4.56.0 torchaudio==2.6.0
+
+ENV TORCH_DEVICE_BACKEND_AUTOLOAD=0
+RUN pip install deepspeed
+RUN pip install tokenizers accelerate safetensors \
+  datasets scipy pandas einops tqdm \
+  sentencepiece protobuf regex \
+  peft loralib \
+  librosa soundfile audioread kaldi-native-fbank kaldiio soxr \
+  openai-whisper whisper_normalizer \
+  pillow opencv-python \
+  psutil pyyaml packaging filelock numpy==1.23.5
+
+RUN pip install funasr
+RUN pip install mpi4py
+
+WORKDIR /workspace

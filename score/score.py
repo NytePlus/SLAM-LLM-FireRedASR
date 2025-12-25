@@ -10,11 +10,13 @@ import argparse
 import logging
 import json
 
+from whisper_normalizer.english import EnglishTextNormalizer
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
+english_normalizer = EnglishTextNormalizer()
 
 class Code(Enum):
     match = 1
@@ -41,6 +43,8 @@ class WordError(object):
         self.ref_words = 0
 
     def get_wer(self):
+        if self.ref_words == 0:
+            return 100
         assert self.ref_words != 0
         errors = (
             self.errors[Code.substitution]
@@ -217,7 +221,10 @@ def main(args):
             data = json.loads(line)
             uttid, ref = data['key'], data['target'].upper()
             biasing_words = set(item.strip() for item in data['hotword'].strip().split(","))
+            if args.norm:
+                ref = english_normalizer(ref).upper()
             refs[uttid] = {"text": ref, "biasing_words": biasing_words}
+
     logger.info("Loaded %d reference utts from %s", len(refs), args.multitask)
 
     hyps = {}
@@ -229,6 +236,9 @@ def main(args):
                 uttid, hyp = ary[0], ary[1].upper()
             else:
                 uttid, hyp = ary[0], ""
+            
+            if args.norm:
+                hyp = english_normalizer(hyp).upper()
             hyps[uttid] = hyp
     logger.info("Loaded %d hypothesis utts from %s", len(hyps), args.pred)
 
@@ -244,6 +254,8 @@ def main(args):
     wer = WordError()
     u_wer = WordError()
     b_wer = WordError()
+
+    ignore_uttid = []
     for uttid in refs:
         if uttid not in hyps:
             continue
@@ -251,7 +263,14 @@ def main(args):
         biasing_words = refs[uttid]["biasing_words"]
         hyp_tokens = hyps[uttid].split()
         ed = EditDistance()
-        result = ed.align(ref_tokens, hyp_tokens)
+        try:
+            result = ed.align(ref_tokens, hyp_tokens)
+        except ValueError as e:
+            if "Doesn't support empty ref AND hyp!" == str(e):
+                ignore_uttid.append(uttid)
+                continue
+            else:
+                raise e
         # print(len(ref_tokens), len(hyp_tokens), len(result.codes))
         for code, ref_idx, hyp_idx in zip(result.codes, result.refs, result.hyps):
             if code == Code.match:
@@ -290,6 +309,8 @@ def main(args):
     print(f"U-WER: {u_wer.get_result_string()}")
     print(f"B-WER: {b_wer.get_result_string()}")
 
+    print(f'ignored uttids: {ignore_uttid}')
+
 
 if __name__ ==  "__main__":
     desc = "Compute WER, U-WER, and B-WER. Results are output to stdout."
@@ -310,6 +331,11 @@ if __name__ ==  "__main__":
         "--lenient",
         action="store_true",
         help="If set, hyps doesn't have to cover all of refs.",
+    )
+    parser.add_argument(
+        "--norm",
+        action="store_true",
+        help="If set, use whisper_normalizer to normalize refs and hyps",
     )
     args = parser.parse_args()
     main(args)

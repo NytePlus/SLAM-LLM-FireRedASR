@@ -3,15 +3,15 @@ export TOKENIZERS_PARALLELISM=false
 export HYDRA_FULL_ERROR=1
 export OMP_NUM_THREADS=1
 export TASK_QUEUE_ENABLE=2
-export ASCEND_LAUNCH_BLOCKING=0
+export ASCEND_LAUNCH_BLOCKING=1
 
 code_dir=.
 dataset=slidespeech
 task=asr
 train_scp_file_path=/data/${dataset}/train_95/
 dev_scp_file_path=/data/${dataset}/dev_oracle_v1/
-train_max_frame_length=15000
-eval_max_frame_length=15000
+train_max_frame_length=20000
+eval_max_frame_length=20000
 multitask_prompt_path=conf/multiprompt.jsonl
 ckpt_path=
 
@@ -51,7 +51,8 @@ fi
 
 
 # Choose Projector
-projector=linear
+projector=FunasrCIF
+cif_loss_weight=10
 
 # Choose LLM
 llm_name=vicuna-7b-v1.5
@@ -86,6 +87,7 @@ hydra.run.dir=$output_dir \
 ++model_config.llm_path=$llm_path \
 ++model_config.llm_dim=$llm_dim \
 ++model_config.firered_path=$firered_path \
+++model_config.cif_loss_weight=$cif_loss_weight \
 ++dataset_config.file=$file \
 ++dataset_config.train_max_frame_length=$train_max_frame_length \
 ++dataset_config.eval_max_frame_length=$eval_max_frame_length \
@@ -94,14 +96,15 @@ hydra.run.dir=$output_dir \
 ++dataset_config.spec_aug=false \
 ++dataset_config.wav_reverb=false \
 ++dataset_config.add_noise=false \
+++dataset_config.include_transcript=true \
 ++train_config.model_name=aispeech_asr \
-++train_config.num_epochs=150 \
+++train_config.num_epochs=50 \
 ++train_config.use_peft=$use_peft \
 ++train_config.freeze_llm=$freeze_llm \
 ++train_config.freeze_encoder=$freeze_encoder \
 ++train_config.freeze_projector=$freeze_projector \
 ++train_config.batching_strategy=dynamic \
-++train_config.validation_interval=50000 \
+++train_config.validation_interval=10000 \
 ++train_config.num_workers_dataloader=4 \
 ++train_config.output_dir=$output_dir \
 ++metric=acc \

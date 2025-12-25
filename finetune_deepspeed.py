@@ -124,6 +124,7 @@ def main(kwargs: DictConfig):
 
     model_factory = get_custom_model_factory(model_config, logger)
     model, tokenizer = model_factory(train_config, model_config, **kwargs)
+    # print(next(model.parameters()).device) # cpu
     parameters = filter(lambda p: p.requires_grad, model.parameters())
     device = torch.device("npu" if torch.npu.is_available() else "cpu")
 
@@ -145,6 +146,7 @@ def main(kwargs: DictConfig):
     model_engine, _, _, _ = deepspeed.initialize(
         model=model, model_parameters=parameters, config=deepspeed_config
     )
+    print(next(model.parameters()).device)
 
     
     # Convert the model to bfloat16 if fsdp and pure_bf16 is enabled

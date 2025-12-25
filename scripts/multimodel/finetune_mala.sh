@@ -6,18 +6,18 @@ export TASK_QUEUE_ENABLE=2
 export ASCEND_LAUNCH_BLOCKING=0
 
 code_dir=.
-dataset=slidespeech
-task=asr
-train_scp_file_path=/data/${dataset}/train_95/
-dev_scp_file_path=/data/${dataset}/dev_oracle_v1/
-train_max_frame_length=15000
-eval_max_frame_length=15000
+dataset=Chinese-LiPS
+task=hotword
+train_scp_file_path=/data/${dataset}/hotword_task/test/train/
+dev_scp_file_path=/data/${dataset}/hotword_task/test/test/
+train_max_frame_length=10000
+eval_max_frame_length=10000
 multitask_prompt_path=conf/multiprompt.jsonl
-ckpt_path=
+ckpt_path=exp/20251123-1026-Chinese-LiPS-lorafalse_hotword_instruct/aispeech_asr_epoch_27_total_step_40000
 
 use_peft=false # For llm
 use_fp16=true
-freeze_encoder=true
+freeze_encoder=false
 freeze_projector=false
 freeze_llm=true
 
@@ -95,19 +95,19 @@ hydra.run.dir=$output_dir \
 ++dataset_config.wav_reverb=false \
 ++dataset_config.add_noise=false \
 ++train_config.model_name=aispeech_asr \
-++train_config.num_epochs=150 \
+++train_config.num_epochs=100 \
 ++train_config.use_peft=$use_peft \
 ++train_config.freeze_llm=$freeze_llm \
 ++train_config.freeze_encoder=$freeze_encoder \
 ++train_config.freeze_projector=$freeze_projector \
 ++train_config.batching_strategy=dynamic \
-++train_config.validation_interval=50000 \
+++train_config.validation_interval=10000 \
 ++train_config.num_workers_dataloader=4 \
 ++train_config.output_dir=$output_dir \
 ++metric=acc \
 "
 
-if [[ $use_peft == "true" && -n "$ckpt_path" ]];then
+if [[ -n "$ckpt_path" ]];then
     hydra_args+=" ++ckpt_path=$ckpt_path/pytorch_model.bin"
 fi
 
