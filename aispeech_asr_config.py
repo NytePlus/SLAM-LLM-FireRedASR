@@ -22,12 +22,13 @@ class ModelConfig:
     llm_path: str = "PATH/to/LLAMA/7B"
     llm_type: str = "decoder_only"
     llm_dim: int = 4096
+    attn_implementation: str = "eager"
     encoder_name: str = 'conformer'
     encoder_config: ConformerConfig = field(default_factory=ConformerConfig)  #
     encoder_path: Optional[str] = None
     encoder_dim: int = 768
     encoder_projector: str = "linear"
-    firered_path :str = "/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/model/FireRedASR-LLM/model.pth.tar"
+    firered_path :str = ""
     encoder_projector_ds_rate: int = 2
     vl_name: str = "Qwen2-vl-7B-Instruct"
     vl_path: Optional[str] = None
@@ -77,7 +78,6 @@ class TrainConfig:
     warmup_steps:int = 1000
     total_steps:int = 100000
     validation_interval:int = 1000
-    lr:float = 1e-4
     weight_decay:float = 0.0
     gamma:float = 0.85
     seed:int = 42
@@ -98,6 +98,7 @@ class TrainConfig:
     })
     freeze_encoder:bool = False
     freeze_projector:bool = False
+    exp_name: str = ""
 
 
 @dataclass
@@ -110,6 +111,7 @@ class DataConfig:
     append_info_tasks : List = field(default_factory=lambda: ["hotword"])
     multitask_prompt_path: str = "conf/multiprompt.jsonl"
     prompt_style: str = "<|im_start|>user\n<speech>{}<|im_end|>\n<|im_start|>assistant\n"
+    # prompt_style: str = "<speech>USER: {}\n ASSISTANT:"
     cmvn_file: str = "/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/model/FireRedASR-LLM/cmvn.ark"
     file: str = "dataset/speech_dataset_large.py:get_speech_dataset"
     train_scp_file_path: str = ""

@@ -15,6 +15,7 @@ import torch
 import torch_npu
 # import torch.npu.nccl as nccl
 import torch.distributed as dist
+from torch.utils.tensorboard import SummaryWriter
 from omegaconf import DictConfig
 from tqdm import tqdm
 from transformers import LlamaTokenizer
@@ -30,6 +31,7 @@ from hydra.core.utils import _flush_loggers, configure_log
 # from dataset.speech_dataset_large import MultiTaskDynamicBatchDataset,MultiTaskDataset
 from utils.checkpoint_handler import save_model_checkpoint_deepspeed
 from utils.memory_utils import MemoryTrace, NoTrace
+from torch.utils.data import IterableDataset
 
 import wandb
 import logging
@@ -206,6 +208,8 @@ def train(
     #     with_flops=False,
     #     experimental_config=experimental_config)
     # prof.start()
+
+    writer = SummaryWriter(log_dir=os.path.join(train_config.output_dir, "run"))
     train_prep = []
     train_loss = []
     train_acc = []
@@ -219,28 +223,27 @@ def train(
     best_val_acc = 0.0
     total_step = 0
     device = f"npu:{local_rank}"
+    train_len = None if isinstance(train_dataloader.dataset, IterableDataset) else len(train_dataloader)
     for epoch in range(train_config.num_epochs):
+        dist.barrier()
         group_join = dist.new_group(
             backend="gloo", timeout=datetime.timedelta(seconds=20))
-        dist.barrier()
         epoch_start_time = time.perf_counter()
         with NoTrace() as memtrace:  # track the memory usage
             model.train()
-            total_loss = torch.zeros(1, device=device, dtype=torch.bfloat16)
-            total_acc = torch.zeros(1, device=device, dtype=torch.bfloat16)
+            total_loss = torch.tensor(0.0).to(device) # 必须用float32，用float16在1967左右累加会缺失
+            total_acc = torch.tensor(0.0).to(device)
+            epoch_step = 0
             if rank == 0:
-                if train_config.batching_strategy != "dynamic":
-                    total_length = len(train_dataloader)//gradient_accumulation_steps
-                    pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
-                else:
+                if train_len is None:
                     pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", dynamic_ncols=True)
+                else:
+                    total_length = train_len //gradient_accumulation_steps
+                    pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
 
             for step, batch in enumerate(train_dataloader):
-                if train_config.batching_strategy == "dynamic" and deepspeed_join(group_join):
+                if deepspeed_join(group_join):
                     break
-                if rank == 0:
-                    print(step)
-                continue
                 
                 total_step += 1
                 for key in batch.keys():
@@ -254,6 +257,7 @@ def train(
                             else batch[key]
                         )
                     )
+                batch['experiment_name'] = train_config.exp_name
                 with autocast(dtype=torch.bfloat16):
                     """
                     input_ids: torch.int64
@@ -270,42 +274,32 @@ def train(
 
                 acc_val = acc.detach().float().item()
                 loss_val = loss.detach().float().item()
-                # if log_config.use_wandb and step % log_config.log_interval == 0:
-                #     if train_config.enable_fsdp or train_config.enable_ddp:
-                #         if rank == 0:
-                #             wandb.log(
-                #                 {
-                #                     "train_inner/train_inner_loss": loss_val,
-                #                     "train_inner/train_inner_accuracy": acc_val,
-                #                 },
-                #                 step=(epoch * total_length + step) if train_config.batching_strategy != "dynamic" else step + 1,
-                #             )
-                #     else:
-                #         wandb.log(
-                #             {
-                #                 "train_inner/train_inner_loss": loss_val,
-                #                 "train_inner/train_inner_accuracy": acc_val,
-                #             },
-                #             step=(epoch * total_length + step) if train_config.batching_strategy != "dynamic" else step + 1,
-                #         )
 
+                # acc_val, loss_val = 0, 0
+                epoch_step += 1
                 total_loss += loss_val
                 total_acc += acc_val
 
                 # deepspeed should handle gradient accumulate
                 model.backward(loss)
                 model.step()
+                grad_norm = model.get_global_grad_norm()
                 # prof.step()
                 if rank == 0:
+                    writer.add_scalar("train/step_lr", model.get_lr()[0], total_step)
+                    writer.add_scalar("train/step_loss", loss_val, total_step)
+                    writer.add_scalar("train/grad_norm", grad_norm, total_step)
                     if (step + 1) % gradient_accumulation_steps == 0 :
                         pbar.update(1)
                     
-                    desc = f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)  if train_config.batching_strategy != 'dynamic' else ''} completed (loss: {loss_val : .4f}, acc: {acc_val : .4f})"
+                    desc = f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{train_len if train_len is not None else ''} completed (loss: {loss_val : .4f}, acc: {acc_val : .4f})"
                     
-                    # if hasattr(outputs, 'embed_loss') and hasattr(outputs, 'quantity_loss'):
-                    #     desc += f" embed_loss: {outputs.embed_loss.detach().item() : .2f} quantity_loss: {outputs.quantity_loss.detach().item() : .2f}"
+                    if train_config.exp_name == "wavprompt":
+                        desc += f" embed_loss: {outputs.embed_loss.detach().item() : .2f} quantity_loss: {outputs.quantity_loss.detach().item() : .2f}"
+                    elif train_config.exp_name == 'ctc':
+                        desc += f" ctc_loss: {outputs.ctc_loss.detach().item() : .2f}"
+
                     pbar.set_description(desc)
-                del outputs
 
                 if total_step % train_config.validation_interval == 0 and train_config.run_validation:
                     eval_ppl, eval_epoch_loss, *rest = evaluation(
@@ -358,6 +352,7 @@ def train(
             if rank == 0:
                 pbar.close()
         # prof.stop()
+        dist.destroy_process_group(group_join)
         epoch_end_time = time.perf_counter() - epoch_start_time
         epoch_times.append(epoch_end_time)
         # Reducing total_loss across all devices if there's more than one npu device
@@ -366,8 +361,8 @@ def train(
         ):
             dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
             dist.all_reduce(total_acc, op=dist.ReduceOp.SUM)
-        train_epoch_loss = total_loss / (step + 1)
-        train_epoch_acc = total_acc / (step + 1)
+        train_epoch_loss = total_loss / epoch_step
+        train_epoch_acc = total_acc / epoch_step
         if train_config.enable_fsdp or train_config.enable_ddp:
             train_epoch_loss = train_epoch_loss / world_size
             train_epoch_acc = train_epoch_acc / world_size
@@ -395,25 +390,16 @@ def train(
                         "train/train_epoch_acc": train_epoch_acc,
                     }
                 )
+        if rank == 0:
+            writer.add_scalar("train/perplexity", train_perplexity, epoch)
+            writer.add_scalar("train/epoch_loss", train_epoch_loss, epoch)
+            writer.add_scalar("train/epoch_acc", train_epoch_acc, epoch)
+            writer.add_scalar("train/epoch_lr", model.get_lr()[0], epoch)
 
         if rank == 0:
             logger.info(
                 f"Epoch {epoch+1}: train_perplexity={train_perplexity.detach().item():.4f}, train_epoch_loss={train_epoch_loss.detach().item():.4f}, epoch time {epoch_end_time}s"
             )
-
-        # if rank == 0:
-        #     logger.info(f"Max npu memory allocated was {memtrace.peak} GB")
-        #     logger.info(f"Max npu memory reserved was {memtrace.max_reserved} GB")
-        #     logger.info(f"Peak active npu memory was {memtrace.peak_active_gb} GB")
-        #     logger.info(f"npu Malloc retires : {memtrace.npu_malloc_retires}")
-        #     logger.info(
-        #         f"CPU Total Peak Memory consumed during the train (max): {memtrace.cpu_peaked + memtrace.cpu_begin} GB"
-        #     )
-
-        # Update the learning rate as needed
-        # lr_scheduler.step()
-    
-        dist.destroy_process_group(group_join)
 
     avg_epoch_time = sum(epoch_times) / len(epoch_times)
     avg_checkpoint_time = (
@@ -468,10 +454,10 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
     eval_loss = torch.zeros(1, device=device, dtype=torch.bfloat16)  # Initialize evaluation loss
     eval_acc = torch.zeros(1, device=device, dtype=torch.bfloat16)
 
+    eval_len = None if isinstance(eval_dataloader.dataset, IterableDataset) else len(eval_dataloader)
     with NoTrace():
-        if train_config.batching_strategy != "dynamic":
-            total_length = len(eval_dataloader)
-            pbar = tqdm(colour="green", desc=f"Evaluating Epoch", total=total_length, dynamic_ncols=True)
+        if eval_len is not None:
+            pbar = tqdm(colour="green", desc=f"Evaluating Epoch", total=eval_len, dynamic_ncols=True)
         else:
             pbar = tqdm(colour="green", desc=f"Evaluating Epoch",  dynamic_ncols=True)
         for step, batch in enumerate(eval_dataloader):
@@ -502,7 +488,7 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
             )
             pbar.update(1)
             pbar.set_description(
-                f"step: {step+1}/{total_length if train_config.batching_strategy != 'dynamic' else '' }, eval_loss: {eval_loss.detach().item()/(step+1):.4f}, eval_acc: {eval_acc.detach().item()/(step+1):.4f}"
+                f"step: {step+1}/{eval_len if eval_len is not None else '' }, eval_loss: {eval_loss.detach().item()/(step+1):.4f}, eval_acc: {eval_acc.detach().item()/(step+1):.4f}"
             )
     dist.barrier()
     # If there's more than one npu device, reduce evaluation loss across all devices
@@ -513,8 +499,8 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
         dist.all_reduce(eval_acc, op=dist.ReduceOp.SUM)
 
     # Compute average loss and perplexity
-    eval_epoch_loss = eval_loss / (len(eval_dataloader) if train_config.batching_strategy != "dynamic" else step + 1)
-    eval_epoch_acc = eval_acc / (len(eval_dataloader) if train_config.batching_strategy != "dynamic" else step + 1)
+    eval_epoch_loss = eval_loss / (eval_len if eval_len is not None else step + 1)
+    eval_epoch_acc = eval_acc / (eval_len if eval_len is not None else step + 1)
     eval_epoch_loss = eval_epoch_loss / world_size
     eval_epoch_acc = eval_epoch_acc / world_size
     eval_ppl = torch.exp(eval_epoch_loss)

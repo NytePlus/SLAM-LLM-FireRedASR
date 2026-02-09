@@ -1,3 +1,4 @@
 {"task": "ASR", "prompt": "请转写音频为文字"}
-{"task": "hotword", "prompt": "请转写音频为文字,语音中可能含有以下关键词,{}"}
+{"task": "hotword_zh", "prompt": "请转写音频为文字,语音中可能含有以下关键词,{}"}
+{"task": "hotword", "prompt": "Transcribe speech to text. Use hotwords in ppt to improve speech recognition accuracy. But if the hotwords are irrelevant, just ignore them. The hotwords are \"{}\"."}
 {"task": "image", "prompt": "请转写音频为文字"}

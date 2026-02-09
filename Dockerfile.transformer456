@@ -19,4 +19,8 @@ RUN pip install tokenizers accelerate safetensors \
 RUN pip install funasr
 RUN pip install mpi4py
 
+RUN sudo apt update && sudo apt-get install fonts-noto-cjk
+RUN pip install tensorboard
+RUN pip install torch-cif
+
 WORKDIR /workspace

@@ -82,10 +82,12 @@ hydra.run.dir=$output_dir \
 ++model_config.encoder_path=$encoder_ckpt_path \
 ++model_config.encoder_dim=$encoder_dim \
 ++model_config.encoder_projector=$projector \
+++model_config.encoder_projector_ds_rate=5 \
 ++model_config.llm_name=$llm_name \
 ++model_config.llm_path=$llm_path \
 ++model_config.llm_dim=$llm_dim \
 ++model_config.firered_path=$firered_path \
+++model_config.attn_implementation="flash_attention_2" \
 ++dataset_config.file=$file \
 ++dataset_config.train_max_frame_length=$train_max_frame_length \
 ++dataset_config.eval_max_frame_length=$eval_max_frame_length \
@@ -95,20 +97,23 @@ hydra.run.dir=$output_dir \
 ++dataset_config.wav_reverb=false \
 ++dataset_config.add_noise=false \
 ++train_config.model_name=aispeech_asr \
-++train_config.num_epochs=150 \
+++train_config.num_epochs=50 \
 ++train_config.use_peft=$use_peft \
 ++train_config.freeze_llm=$freeze_llm \
 ++train_config.freeze_encoder=$freeze_encoder \
 ++train_config.freeze_projector=$freeze_projector \
-++train_config.batching_strategy=dynamic \
-++train_config.validation_interval=50000 \
+++train_config.batching_strategy=fixed \
+++train_config.batch_size_training=4 \
+++train_config.val_batch_size=4 \
+++train_config.validation_interval=10000 \
 ++train_config.num_workers_dataloader=4 \
 ++train_config.output_dir=$output_dir \
 ++metric=acc \
 "
 
-if [[ $use_peft == "true" && -n "$ckpt_path" ]];then
-    hydra_args+=" ++ckpt_path=$ckpt_path/pytorch_model.bin"
+if [[ -n "$ckpt_path" ]];then
+    hydra_args+=" ++deepspeed_ckpt_path=$ckpt_path"
+    # hydra_args+=" ++ckpt_path=$ckpt_path/pytorch_model.bin"
 fi
 
 # 单机Debug

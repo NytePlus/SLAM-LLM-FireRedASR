@@ -245,7 +245,11 @@ def width(string):
 
 
 def default_cluster(word):
-    unicode_names = [unicodedata.name(char) for char in word]
+    try:
+        unicode_names = [unicodedata.name(char) for char in word]
+    except Exception as e:
+        print(word)
+        raise e
     for i in reversed(range(len(unicode_names))):
         if unicode_names[i].startswith('DIGIT'):  # 1
             unicode_names[i] = 'Number'  # 'DIGIT'

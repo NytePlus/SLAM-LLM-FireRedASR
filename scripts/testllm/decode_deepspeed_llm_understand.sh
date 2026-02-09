@@ -6,20 +6,15 @@ use_fp16=true
 freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
-eval_max_frame_length=10000
-ckpt_path=exp/20251110-1416-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_30_total_step_370000
+eval_max_frame_length=15000
+ckpt_path=exp/20260123-1125-slidespeech-kernel-linear/aispeech_asr_epoch_35_total_step_150000
 dataset=slidespeech
 task=asr_understand3
 sub_test=test
 test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
-multitask_prompt_path=conf/testllmprompt2.jsonl
+multitask_prompt_path=conf/testllmprompt.jsonl
 
-
-export LOCAL_RANK=0
-export RANK=0
-export WORLD_SIZE=1
-export ASCEND_RT_VISIBLE_DEVICES=0
-
+deepspeed_config=conf/inference_config.json
 
 # Choose Encoder
 encoder_name=wavlm
@@ -46,7 +41,7 @@ else
 fi
 
 # Choose Projector
-projector=linear
+projector=kernel-linear
 
 
 # Choose LLM
@@ -80,6 +75,7 @@ deepspeed \
     ++model_config.encoder_path=$encoder_ckpt_path \
     ++model_config.encoder_dim=$encoder_dim \
     ++model_config.encoder_projector=$projector \
+    ++model_config.encoder_projector_ds_rate=5 \
     ++model_config.llm_name=$llm_name \
     ++model_config.llm_path=$llm_path \
     ++model_config.llm_dim=$llm_dim \
@@ -95,14 +91,14 @@ deepspeed \
     ++train_config.freeze_llm=$freeze_llm \
     ++train_config.freeze_encoder=$freeze_encoder \
     ++train_config.freeze_projector=$freeze_projector \
-    ++train_config.batching_strategy=dynamic \
+    ++train_config.batching_strategy=fixed \
+    ++train_config.val_batch_size=1 \
     ++train_config.num_epochs=1 \
     ++train_config.num_workers_dataloader=0 \
     ++train_config.output_dir=$output_dir \
     ++train_config.use_fp16=$use_fp16 \
     ++decode_log=$decode_log \
     ++ckpt_path=$ckpt_path/pytorch_model.bin \
+    ++deepspeed_config=$deepspeed_config \
 || exit 1
 
-
-python utils/wenet_compute_cer.py --char=1 -v=1 ${decode_log}_gt ${decode_log}_pred > ${decode_log}_cer

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model.adapter import Adapter, CIFAdapter, FunasrCIFAdapter
+from model.adapter import EncoderProjectorConcat, EncoderProjectorCov1d, CIFAdapter, FunasrCIFAdapter, KernelLinear, FlashCIFAdapter
 from model.conformer_encoder import ConformerEncoder
 
 import os
@@ -101,11 +101,17 @@ def setup_encoder_projector(train_config, model_config, **kwargs):
 
     projector_name = model_config.encoder_projector
     if projector_name == "linear":
-        encoder_projector = Adapter(encoder_dim,model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
+        encoder_projector = EncoderProjectorConcat(encoder_dim,model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
+    elif projector_name == "cov1d-linear":
+        encoder_projector = EncoderProjectorCov1d(encoder_dim,model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
+    elif projector_name == "kernel-linear":
+        encoder_projector = KernelLinear(encoder_dim,model_config["llm_dim"],model_config["encoder_projector_ds_rate"])
     elif projector_name == "CIF":
         encoder_projector = CIFAdapter(encoder_dim, model_config["llm_dim"])
     elif projector_name == "FunasrCIF":
         encoder_projector = FunasrCIFAdapter(encoder_dim, model_config["llm_dim"])
+    elif projector_name == "FlashCIF":
+        encoder_projector = FlashCIFAdapter(encoder_dim, model_config["llm_dim"])
 
     print_module_size(encoder_projector, f"{projector_name} adapter", int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
 
@@ -123,7 +129,7 @@ def setup_llm(train_config, model_config, **kwargs):
 
     config = AutoConfig.from_pretrained(model_config.llm_path)
     config.use_cache=use_cache
-    config._attn_implementation='flash_attention_2'
+    config._attn_implementation=model_config.attn_implementation
 
     model = LlamaForCausalLM.from_pretrained(
         model_config.llm_path,
@@ -195,7 +201,7 @@ def model_factory(train_config, model_config, **kwargs):
         cif_loss_weight=model_config.cif_loss_weight,
         **kwargs,
     )
-    firered_path = model_config.get( "firered_path", None)
+    firered_path = model_config.get("firered_path", None)
     if firered_path is not None and firered_path != '':
         logger.info("loading pretrain parts from: {}".format(firered_path))
         firered_dict = torch.load(firered_path, map_location="cpu")
@@ -328,6 +334,51 @@ class slam_model_asr(torch.nn.Module):
         return inputs_embeds, attention_mask, labels, position_ids
     # --- end ---
 
+    def debug_verify_labels(self, input_ids, labels, tokenizer, is_attn_mask, num_samples=2):
+        """
+        可视化验证 labels 是否正确。
+        绿色/明亮部分：计算 Loss 的部分 (Target)
+        灰色/暗淡部分：被忽略的部分 (Prompt/Padding)
+        """
+        for i in range(min(len(input_ids), num_samples)):
+            ids = input_ids[i].tolist()
+            lbs = labels[i].tolist()
+
+            segments = []
+            current_tokens = []
+            current_is_masked = None
+
+            for token_id, label_id in zip(ids, lbs):
+                token_text = tokenizer.decode([token_id])
+
+                if is_attn_mask:
+                    is_masked = label_id
+                else:
+                    is_masked = (label_id == -100)
+
+                if current_is_masked is None:
+                    current_is_masked = is_masked
+
+                # 状态变化，切段
+                if is_masked != current_is_masked:
+                    segments.append((current_is_masked, "".join(current_tokens)))
+                    current_tokens = []
+                    current_is_masked = is_masked
+
+                current_tokens.append(token_text)
+            if current_tokens:
+                segments.append((current_is_masked, "".join(current_tokens)))
+
+            rendered = []
+            for is_masked, text in segments:
+                if is_masked:
+                    rendered.append(f"[[{text}]]")
+                else:
+                    rendered.append(f"**{text}**")
+
+            print("="*50)
+            print("".join(rendered))
+
     def forward(self,
                 input_ids: torch.LongTensor = None,
                 input_features: Optional[torch.Tensor] = None,
@@ -340,6 +391,7 @@ class slam_model_asr(torch.nn.Module):
                 labels: Optional[torch.LongTensor] = None,
                 transcript_ids: Optional[torch.Tensor] = None,
                 transcript_length: Optional[torch.Tensor] = None,
+                experiment_name: str= ""
                 ):
         
         # print(input_features.shape, input_ids.shape, pixel_values.shape) # torch.Size([2, 217101]) torch.Size([2, 153]) torch.Size([2, 24, 1176])
@@ -354,26 +406,29 @@ class slam_model_asr(torch.nn.Module):
             encoder_outs = self.encoder(input_features) # bs*seq*dim
             encoder_feature_length = input_feature_length // 2
         
-        if type(self.encoder_projector).__name__ == 'Adapter':
+        if type(self.encoder_projector).__name__ in ["EncoderProjectorConcat", "EncoderProjectorCov1d", "KernelLinear"]:
             projector_outs = self.encoder_projector(encoder_outs)
             projector_feature_length = encoder_feature_length // self.encoder_projector.ds
-        elif type(self.encoder_projector).__name__ in ['CIFAdapter', 'FunasrCIFAdapter']:
+        elif type(self.encoder_projector).__name__ in ['CIFAdapter', 'FunasrCIFAdapter', 'FlashCIFAdapter']:
             projector_outs, projector_feature_length, quantity_loss = self.encoder_projector(encoder_outs, encoder_feature_length, transcript_length)
             # print('CIFAdapter: ', encoder_outs.shape, encoder_feature_length, transcript_length, projector_outs.shape, projector_feature_length)
         
-        # print("\n","End",inputs_embeds, attention_mask, labels, position_ids,encoder_feature_length,projector_feature_length)
         inputs_embeds = self.llm.get_input_embeddings()(input_ids)
         # print(projector_outs.shape, inputs_embeds.shape) # torch.Size([2, 339, 4096]) torch.Size([2, 153, 4096])
 
         inputs_embeds, attention_mask, labels, position_ids, input_ids = self._merge_input_ids_with_audio_features(
                 projector_outs, projector_feature_length, inputs_embeds, input_ids, attention_mask, labels
             )
+        # self.debug_verify_labels(input_ids, attention_mask, self.tokenizer, is_attn_mask=True, )
+        # self.debug_verify_labels(input_ids, labels, self.tokenizer, is_attn_mask=False, )
+        # print(inputs_embeds[:, :].norm(dim=-1).to(torch.float32).detach().cpu().numpy().tolist())
+        # input('')
         
         if self.image_encoder is not None:
+            print('image encode')
             inputs_embeds, attention_mask, labels, position_ids = self.encode_image(
                 pixel_values, pixel_values_length, grid_thw, 
                 inputs_embeds, attention_mask, labels, input_ids)
-
         model_outputs = self.llm(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels, position_ids=position_ids)
         acc = -1
         if self.metric:
@@ -384,8 +439,7 @@ class slam_model_asr(torch.nn.Module):
                 # print('predict: ', self.tokenizer.decode(preds[0, :-1].clamp(0, vocab_size-1)))
                 # print('gt: ', self.tokenizer.decode(labels[0, 1:].clamp(0, vocab_size-1)))
 
-        if transcript_length is not None:
-            print('transcript is not None')
+        if experiment_name == "wavprompt":
             transcript_embed = self.llm.get_input_embeddings()(transcript_ids)
             mask = torch.arange(transcript_ids.size(1), device=transcript_ids.device).unsqueeze(0) < transcript_length.unsqueeze(1)
             mask = mask.unsqueeze(-1)  # [B, T, 1]
@@ -398,6 +452,17 @@ class slam_model_asr(torch.nn.Module):
             model_outputs.embed_loss = embed_loss
             model_outputs.quantity_loss = quantity_loss
             model_outputs.loss = model_outputs.loss + self.cif_loss_weight * embed_loss + 0.05 * quantity_loss
+        elif experiment_name == "ctc":
+            ctc_loss = nn.CTCLoss(blank=self.tokenizer.pad_token_id, zero_infinity=True)
+            print(f'logits: {model_outputs.logits.shape}, gt: {transcript_ids.shape}, logits_length: {projector_feature_length.shape}, gt_length: {transcript_length.shape}')
+
+            model_outputs.ctc_loss = ctc_loss(
+                model_outputs.logits,
+                transcript_ids,
+                projector_feature_length,
+                transcript_length
+            )
+            model_outputs.loss = model_outputs.loss + model_outputs.ctc_loss
 
         return model_outputs, acc
     
@@ -441,6 +506,7 @@ class slam_model_asr(torch.nn.Module):
         inputs_embeds, attention_mask, labels, position_ids, input_ids = self._merge_input_ids_with_audio_features(
                 projector_outs, projector_feature_length, inputs_embeds, input_ids, attention_mask, labels
             )
+        # self.debug_verify_labels(input_ids, attention_mask, self.tokenizer, is_attn_mask=True, )
         if self.image_encoder is not None:
             inputs_embeds, attention_mask, labels, position_ids = self.encode_image(
                 pixel_values, pixel_values_length, grid_thw, 

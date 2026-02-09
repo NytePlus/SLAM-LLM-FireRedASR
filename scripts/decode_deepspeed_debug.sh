@@ -6,13 +6,12 @@ use_fp16=true
 freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
-eval_max_frame_length=50000
-ckpt_path=exp/20251110-1416-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_32_total_step_400000
+eval_max_frame_length=15000
+ckpt_path=exp/20260103-1558-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_23_total_step_350000
 dataset=slidespeech
 task=asr
 sub_test=test
 test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
-
 
 export LOCAL_RANK=0
 export RANK=0
@@ -72,8 +71,8 @@ else
 fi
 
 
-decode_log=$ckpt_path/decode_${dataset}_nokw_${task}_${sub_test}
-deepspeed \
+decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
+deepspeed --master_port=29501\
     $code_dir/inference_batch_deepspeed.py \
     hydra.run.dir=$ckpt_path \
     ++model_config.encoder_name=$encoder_name \

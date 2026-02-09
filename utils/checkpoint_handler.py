@@ -167,7 +167,6 @@ def save_model_checkpoint(
         logger.info(f"model checkpoint saved for epoch {epoch} at {save_full_path}\n")
 
 def save_model_checkpoint_deepspeed(model, cfg, checkpoint_name="checkpoint"):
-    print(type(model))
     logger.info(f"--> saving model ...")
     save_dir = os.path.join(cfg.output_dir, checkpoint_name)
     if int(os.environ["RANK"]) == 0:
@@ -179,7 +178,7 @@ def save_model_checkpoint_deepspeed(model, cfg, checkpoint_name="checkpoint"):
     model.save_checkpoint(save_dir=save_full_path, exclude_frozen_parameters=True)
     dist.barrier()
     if int(os.environ["RANK"]) == 0:
-        convert_zero_checkpoint_to_fp32_state_dict(save_full_path,save_full_path)
+        convert_zero_checkpoint_to_fp32_state_dict(save_full_path, save_full_path)
     logger.info(f"encoder saved at {save_full_path}_model")
     dist.barrier()
       

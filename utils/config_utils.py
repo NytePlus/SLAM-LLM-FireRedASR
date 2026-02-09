@@ -64,9 +64,10 @@ def get_dataloader_kwargs(train_config, dataset, tokenizer, mode):
         kwargs = {}
         batch_size = train_config.batch_size_training if mode=="train" else train_config.val_batch_size
 
-        if train_config.batching_strategy == "dynamic":
+        if train_config.batching_strategy in ["dynamic", "fixed"]:
             kwargs["sampler"] = None
-            kwargs["batch_size"] = None
+            kwargs["batch_size"] = batch_size
+            kwargs["shuffle"]=(mode=="train")
             kwargs["drop_last"] = False
             kwargs["collate_fn"] = dataset.collator 
             logger.info(f"Using batching strategy: {train_config.batching_strategy}")

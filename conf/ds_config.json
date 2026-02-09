@@ -1,12 +1,13 @@
 {
     "train_micro_batch_size_per_gpu": 1,
+    "gradient_accumulation_steps": 1,
     "optimizer": {
         "type": "AdamW",
         "params": {
             "lr": 5e-5,
             "betas": [0.9, 0.999],
             "eps": 1e-06
-    }
+        }
     },
     "bf16": {
         "enabled": true
@@ -21,9 +22,9 @@
     "scheduler": {
         "type": "WarmupCosineLR",
         "params": {
-        "warmup_num_steps": 1000,
-        "total_num_steps": 600000
-    }},
+            "warmup_num_steps": 1000,
+            "total_num_steps": 215900
+        }
+    },
     "checkpoint_activations": false
-
 }

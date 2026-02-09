@@ -15,10 +15,10 @@ dataset=slidespeech
 task=asr
 train_scp_file_path=/data/${dataset}/train_95/
 dev_scp_file_path=/data/${dataset}/dev_oracle_v1/
-train_max_frame_length=50000
-eval_max_frame_length=50000
+train_max_frame_length=15000
+eval_max_frame_length=15000
 multitask_prompt_path=conf/multiprompt.jsonl
-ckpt_path=
+ckpt_path=exp/20260118-1542-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_19_total_step_80000
 
 use_peft=false # For llm
 use_fp16=true
@@ -87,6 +87,7 @@ hydra.run.dir=$output_dir \
 ++model_config.encoder_path=$encoder_ckpt_path \
 ++model_config.encoder_dim=$encoder_dim \
 ++model_config.encoder_projector=$projector \
+++model_config.encoder_projector_ds_rate=5 \
 ++model_config.llm_name=$llm_name \
 ++model_config.llm_path=$llm_path \
 ++model_config.llm_dim=$llm_dim \
@@ -105,15 +106,16 @@ hydra.run.dir=$output_dir \
 ++train_config.freeze_llm=$freeze_llm \
 ++train_config.freeze_encoder=$freeze_encoder \
 ++train_config.freeze_projector=$freeze_projector \
-++train_config.batching_strategy=dynamic \
-++train_config.validation_interval=10000 \
+++train_config.batching_strategy=fixed \
+++train_config.validation_interval=1 \
 ++train_config.num_workers_dataloader=0 \
 ++train_config.output_dir=$output_dir \
 ++metric=acc \
 "
 
-if [[ $use_peft == "true" && -n "$ckpt_path" ]];then
+if [[ -n "$ckpt_path" ]];then
     hydra_args+=" ++ckpt_path=$ckpt_path/pytorch_model.bin"
+    # hydra_args+=" ++deepspeed_ckpt_path=$ckpt_path"
 fi
 
 # 单机Debug

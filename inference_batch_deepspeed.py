@@ -163,7 +163,7 @@ def main(kwargs: DictConfig):
     n, i = 100, 0
     with open(pred_path, "w") as pred, open(gt_path, "w") as gt:
         with torch.no_grad():
-            for step, batch in tqdm(enumerate(test_dataloader)):
+            for step, batch in enumerate(tqdm(test_dataloader)):
                 # i += 1
                 # if i > n: break
                 for key in batch.keys():
@@ -184,8 +184,8 @@ def main(kwargs: DictConfig):
                     output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
                 else:
                     output_text = tokenizer.batch_decode(model_outputs, skip_special_tokens=True)
-                # print(output_text)
                 for key, text, target in zip(batch["keys"], output_text, batch["targets"]):
+                    text = text.replace('\x00', '').replace('\n', '')
                     pred.write(key + " " + text.strip() + "\n")
                     gt.write(key + " " + target + "\n")
 

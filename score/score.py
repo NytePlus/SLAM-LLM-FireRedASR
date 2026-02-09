@@ -220,7 +220,7 @@ def main(args):
         for line in f:
             data = json.loads(line)
             uttid, ref = data['key'], data['target'].upper()
-            biasing_words = set(item.strip() for item in data['hotword'].strip().split(","))
+            biasing_words = set(item.strip().upper() for item in data['hotword'].strip().split(args.hw_sep))
             if args.norm:
                 ref = english_normalizer(ref).upper()
             refs[uttid] = {"text": ref, "biasing_words": biasing_words}
@@ -258,6 +258,7 @@ def main(args):
     ignore_uttid = []
     for uttid in refs:
         if uttid not in hyps:
+            ignore_uttid.append(uttid)
             continue
         ref_tokens = refs[uttid]["text"].split()
         biasing_words = refs[uttid]["biasing_words"]
@@ -336,6 +337,10 @@ if __name__ ==  "__main__":
         "--norm",
         action="store_true",
         help="If set, use whisper_normalizer to normalize refs and hyps",
+    )
+    parser.add_argument(
+        "--hw_sep",
+        default=','
     )
     args = parser.parse_args()
     main(args)

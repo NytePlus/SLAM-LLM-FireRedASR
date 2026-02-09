@@ -6,8 +6,8 @@ use_fp16=true
 freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
-eval_max_frame_length=50000
-ckpt_path=exp/20251217-1106-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_20_total_step_80000
+eval_max_frame_length=15000
+ckpt_path=exp/20260124-1908-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_24_total_step_100000
 dataset=slidespeech
 task=asr
 sub_test=test
@@ -59,7 +59,7 @@ else
     exit 1
 fi
 
-projector=linear
+projector=kernel-linear
 
 decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
 deepspeed \
@@ -69,6 +69,7 @@ deepspeed \
     ++model_config.encoder_path=$encoder_ckpt_path \
     ++model_config.encoder_dim=$encoder_dim \
     ++model_config.encoder_projector=$projector \
+    ++model_config.encoder_projector_ds_rate=5 \
     ++model_config.llm_name=$llm_name \
     ++model_config.llm_path=$llm_path \
     ++model_config.llm_dim=$llm_dim \
@@ -83,7 +84,8 @@ deepspeed \
     ++train_config.freeze_llm=$freeze_llm \
     ++train_config.freeze_encoder=$freeze_encoder \
     ++train_config.freeze_projector=$freeze_projector \
-    ++train_config.batching_strategy=dynamic \
+    ++train_config.batching_strategy=fixed \
+    ++train_config.val_batch_size=1 \
     ++train_config.num_epochs=1 \
     ++train_config.num_workers_dataloader=0 \
     ++train_config.output_dir=$output_dir \

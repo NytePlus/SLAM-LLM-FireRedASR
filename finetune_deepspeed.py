@@ -30,6 +30,9 @@ class RunConfig:
     ckpt_path: Optional[str] = field(
         default=None, metadata={"help": "The path to projector checkpoint"}
     )
+    deepspeed_ckpt_path: Optional[str] = field(
+        default=None, metadata={"help": "The path to projector checkpoint"}
+    )
     encoder_ckpt_path: Optional[str] = field(
         default=None, metadata={"help": "The path to wavlm-encoder checkpoint"}
     )
@@ -124,7 +127,6 @@ def main(kwargs: DictConfig):
 
     model_factory = get_custom_model_factory(model_config, logger)
     model, tokenizer = model_factory(train_config, model_config, **kwargs)
-    # print(next(model.parameters()).device) # cpu
     parameters = filter(lambda p: p.requires_grad, model.parameters())
     device = torch.device("npu" if torch.npu.is_available() else "cpu")
 
@@ -141,13 +143,19 @@ def main(kwargs: DictConfig):
     # with open(f".{rank}.done", "w"):
     #     pass
 
-
     # Initialize the optimizer and learning rate scheduler
     model_engine, _, _, _ = deepspeed.initialize(
         model=model, model_parameters=parameters, config=deepspeed_config
     )
-    print(next(model.parameters()).device)
 
+    if kwargs.deepspeed_ckpt_path:
+        _, _ = model_engine.load_checkpoint(
+            kwargs.deepspeed_ckpt_path,
+            load_optimizer_states=True,
+            load_lr_scheduler_states=False,
+            load_module_strict=False
+        )
+        model_engine.optimizer.global_steps = 0
     
     # Convert the model to bfloat16 if fsdp and pure_bf16 is enabled
     # if (train_config.enable_fsdp or train_config.enable_ddp) and fsdp_config.pure_bf16:
@@ -168,22 +176,8 @@ def main(kwargs: DictConfig):
             wandb.config.update({"dataset_config": dataset_config})
     
     # # Load and preprocess the dataset for training and validation
-    # dataset_train = get_preprocessed_dataset(
-    #     tokenizer,
-    #     dataset_config,
-    #     split="train",
-    # )
-    # if (not (train_config.enable_fsdp or train_config.enable_ddp) or rank == 0) and train_config.batching_strategy != "dynamic":
-    #     logger.info(f"--> Training Set Length = {len(dataset_train)}")
-    # dataset_val = get_preprocessed_dataset(
-    #     tokenizer,
-    #     dataset_config,
-    #     split="val",
-    # )
-    # if not (train_config.enable_fsdp or train_config.enable_ddp) or rank == 0 and train_config.batching_strategy != "dynamic":
-    #     logger.info(f"--> Validation Set Length = {len(dataset_val)}")
-    dataset_train = get_preprocessed_dataset(tokenizer, dataset_config, split="train")
-    dataset_val = get_preprocessed_dataset(tokenizer, dataset_config, split="val")
+    dataset_train = get_preprocessed_dataset(tokenizer, dataset_config, "train", train_config.batching_strategy)
+    dataset_val = get_preprocessed_dataset(tokenizer, dataset_config, "val", train_config.batching_strategy)
     train_dl_kwargs = get_dataloader_kwargs(train_config, dataset_train, tokenizer, "train")
 
     # Create DataLoaders for the training and validation dataset

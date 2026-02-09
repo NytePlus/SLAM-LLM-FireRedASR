@@ -13,6 +13,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from tqdm import tqdm
 
 from typing import Optional
+from torch.utils.data import IterableDataset
 from aispeech_asr_config import ModelConfig, TrainConfig, DataConfig, LogConfig
 from utils.model_utils import get_custom_model_factory
 from utils.dataset_utils import get_preprocessed_dataset
@@ -131,8 +132,9 @@ def main(kwargs: DictConfig):
 	logger.info("=====================================")
 	pred_path = kwargs.get('decode_log') + "_pred"
 	gt_path = kwargs.get('decode_log') + "_gt"
+	test_len = None if isinstance(test_dataloader.dataset, IterableDataset) else len(test_dataloader)
 	with open(pred_path, "w") as pred, open(gt_path, "w") as gt:
-		for step, batch in tqdm(enumerate(test_dataloader), total=len(test_dataloader) if train_config.batching_strategy != "dynamic" else ""):
+		for step, batch in tqdm(enumerate(test_dataloader), total=test_len if test_len is not None else ""):
 			for key in batch.keys():
 				batch[key] = batch[key].to(device) if isinstance(batch[key], torch.Tensor) else batch[key]
 			model_outputs = model.generate(**batch)
