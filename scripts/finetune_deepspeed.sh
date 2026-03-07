@@ -1,5 +1,4 @@
 #!/bin/bash
-# DATA_DIR=/home/ma-user/work/data MODEL_DIR=/home/ma-user/work/models ATTN_IMPL=flash_attention_2 OUTPUT_DIR=exp bash scripts/finetune_deepspeed.sh
 export TOKENIZERS_PARALLELISM=false
 export HYDRA_FULL_ERROR=1
 export OMP_NUM_THREADS=1
@@ -9,8 +8,8 @@ export ASCEND_LAUNCH_BLOCKING=0
 code_dir=.
 dataset=slidespeech
 task=asr
-train_scp_file_path=${DATA_DIR}/${dataset}/train_95
-dev_scp_file_path=${DATA_DIR}/${dataset}/dev_oracle_v1
+train_scp_file_path=/data/${dataset}/train_95
+dev_scp_file_path=/data/${dataset}/dev_oracle_v1
 train_max_frame_length=15000
 eval_max_frame_length=15000
 multitask_prompt_path=conf/multiprompt.jsonl
@@ -37,7 +36,7 @@ then
     
 elif [[ $encoder_name == "wavlm" ]]
 then
-    encoder_ckpt_path=${MODEL_DIR}/NytePlus/wavlm-large/WavLM-Large.pt
+    encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/guoyiwei/remote/code/AudioFeatExtraction/wavlm/pretrained/WavLM-Large.pt
     encoder_dim=1024
     file=dataset/speech_dataset_large_wavlm.py:get_speech_dataset
 
@@ -58,11 +57,11 @@ projector=linear
 llm_name=Qwen2.5-7B-Instruct
 if [[ $llm_name == "vicuna-7b-v1.5" ]]
 then
-    llm_path=${MODEL_DIR}/AI-ModelScope/vicuna-7b-v1.5
+    llm_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
     llm_dim=4096
 elif [[ $llm_name == "Qwen2.5-7B-Instruct" ]]
 then
-    llm_path=${MODEL_DIR}/Qwen/Qwen2.5-7B-Instruct
+    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-7B-Instruct
     llm_dim=3584 
 elif [[ $llm_name == "Qwen2-7B" ]]
 then
@@ -76,7 +75,8 @@ else
     exit 1
 fi
 
-output_dir=${OUTPUT_DIR}/$(date +"%Y%m%d-%H%M")-$dataset-lora${use_peft}_${task}_instruct
+export PROMPT_STYLE="<|im_start|>user\n<speech><image>{}<|im_end|>\n<|im_start|>assistant\n"
+output_dir=exp/$(date +"%Y%m%d-%H%M")-$dataset-lora${use_peft}_${task}_instruct
 hydra_args="
 hydra.run.dir=$output_dir \
 ++model_config.encoder_name=$encoder_name \
@@ -88,7 +88,7 @@ hydra.run.dir=$output_dir \
 ++model_config.llm_path=$llm_path \
 ++model_config.llm_dim=$llm_dim \
 ++model_config.firered_path=$firered_path \
-++model_config.attn_implementation=$ATTN_IMPL \
+++model_config.attn_implementation=flash_attention_2 \
 ++dataset_config.file=$file \
 ++dataset_config.train_max_frame_length=$train_max_frame_length \
 ++dataset_config.eval_max_frame_length=$eval_max_frame_length \
@@ -98,7 +98,7 @@ hydra.run.dir=$output_dir \
 ++dataset_config.wav_reverb=false \
 ++dataset_config.add_noise=false \
 ++train_config.model_name=aispeech_asr \
-++train_config.num_epochs=25 \
+++train_config.num_epochs=50 \
 ++train_config.use_peft=$use_peft \
 ++train_config.freeze_llm=$freeze_llm \
 ++train_config.freeze_encoder=$freeze_encoder \

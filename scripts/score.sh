@@ -1,4 +1,4 @@
-ckpt_path=exp/20260216-1515-slidespeech-ctc/aispeech_asr_epoch_2_total_step_10000
+ckpt_path=exp/20260306-2248-slidespeech-qwen-wrong_linear/aispeech_asr_epoch_23_total_step_70000
 dataset=slidespeech
 task=asr
 sub_test=test

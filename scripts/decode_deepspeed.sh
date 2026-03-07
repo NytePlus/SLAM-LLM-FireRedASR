@@ -10,15 +10,15 @@ freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
 eval_max_frame_length=15000
-ckpt_path=exp/20260121-1702-slidespeech-linear/aispeech_asr_epoch_24_total_step_100000
+ckpt_path=exp/20260306-2248-slidespeech-qwen-linear/aispeech_asr_epoch_23_total_step_70000
 dataset=slidespeech
 task=asr
-sub_test=dev
+sub_test=test
 test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
 
 deepspeed_config=conf/inference_config.json
 
-llm_name=vicuna-7b-v1.5
+llm_name=Qwen2.5-7B-Instruct
 if [[ $llm_name == "vicuna-7b-v1.5" ]]
 then
     llm_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
@@ -88,6 +88,7 @@ deepspeed \
     ++model_config.llm_path=$llm_path \
     ++model_config.llm_dim=$llm_dim \
     ++model_config.firered_path=$firered_path \
+    ++model_config.attn_implementation=flash_attention_2 \
     ++dataset_config.file=$file \
     ++dataset_config.test_scp_file_path=$test_scp_file_path \
     ++dataset_config.inference_mode=true \

@@ -1,7 +1,7 @@
+import os
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 from torch.distributed.fsdp import ShardingStrategy
-
 
 
 @dataclass
@@ -111,9 +111,7 @@ class DataConfig:
     eval_max_frame_length: int = 2000
     append_info_tasks : List = field(default_factory=lambda: ["hotword"])
     multitask_prompt_path: str = "conf/multiprompt.jsonl"
-    prompt_style: str = "<|im_start|>user\n<speech>{}<|im_end|>\n<|im_start|>assistant\n"
-    # prompt_style: str = "<|im_start|>user\n<speech><image>{}<|im_end|>\n<|im_start|>assistant\n"
-    # prompt_style: str = "<speech>USER: {}\n ASSISTANT:"
+    prompt_style: str = os.environ.get('PROMPT_STYLE', "<|im_start|>user\n<speech>{}<|im_end|>\n<|im_start|>assistant\n")
     cmvn_file: str = "/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/model/FireRedASR-LLM/cmvn.ark"
     file: str = "dataset/speech_dataset_large.py:get_speech_dataset"
     train_scp_file_path: str = ""

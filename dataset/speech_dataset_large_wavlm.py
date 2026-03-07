@@ -40,7 +40,7 @@ class MultiTaskDataset(Dataset):
                     self.multitask_prompt_list[item["task"]].append(item["prompt"])
                 else:
                     self.multitask_prompt_list[item["task"]] = [item["prompt"]]
-        print(f"[Prompt] {self.multitask_prompt_list}")
+        print(f"[Prompt] {self.multitask_prompt_list[item["task"]]}")
         if split == "train":
             self.data_path = dataset_config.train_scp_file_path
             if dataset_config.wav_reverb:
