@@ -37,7 +37,7 @@ class Paragraph():
             uttid = f'{utt}-{idx :04d}'
             self.idx[uttid] = len(self.segments) - 1
 
-    def part(self, uttid, range = 40):
+    def part(self, uttid, range = 10):
         end = self.idx[uttid]
         begin = max(0, end - range)
         return " ".join(self.segments[begin : end]), self.segments[end]
@@ -171,7 +171,7 @@ def main(args):
                 f"{uttid} missing in pred! Set `--lenient` flag to ignore this error."
             )
 
-    ppl = PPL()
+    ppl = PPL("/models/Qwen/Qwen2.5-7B")
 
     ignore_uttid = []
     for uttid in tqdm(refs, file=sys.stderr):

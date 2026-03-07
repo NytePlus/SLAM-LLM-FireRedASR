@@ -15,7 +15,7 @@ dev_scp_file_path=${DATA_DIR}/${dataset}/dev_oracle_v1/
 train_max_frame_length=15000
 eval_max_frame_length=15000
 multitask_prompt_path=conf/multiprompt.jsonl
-ckpt_path=exp/20260216-1810-slidespeech-multimodel/aispeech_asr_epoch_27_total_step_230000
+ckpt_path=
 
 use_peft=false # For llm
 use_fp16=true

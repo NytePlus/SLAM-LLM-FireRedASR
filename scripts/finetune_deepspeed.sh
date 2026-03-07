@@ -55,7 +55,7 @@ fi
 projector=linear
 
 # Choose LLM
-llm_name=vicuna-7b-v1.5
+llm_name=Qwen2.5-7B-Instruct
 if [[ $llm_name == "vicuna-7b-v1.5" ]]
 then
     llm_path=${MODEL_DIR}/AI-ModelScope/vicuna-7b-v1.5
@@ -98,7 +98,7 @@ hydra.run.dir=$output_dir \
 ++dataset_config.wav_reverb=false \
 ++dataset_config.add_noise=false \
 ++train_config.model_name=aispeech_asr \
-++train_config.num_epochs=50 \
+++train_config.num_epochs=25 \
 ++train_config.use_peft=$use_peft \
 ++train_config.freeze_llm=$freeze_llm \
 ++train_config.freeze_encoder=$freeze_encoder \
@@ -129,36 +129,36 @@ fi
 # exit 0
 
 # 调试机多卡训练
-deepspeed \
-    --num_nodes 1 \
-    --num_gpus 8 \
-    $code_dir/finetune_deepspeed.py \
-    ++train_config.enable_fsdp=false \
-    ++train_config.enable_ddp=true \
-    ++train_config.use_fp16=$use_fp16 \
-    ++deepspeed_config=$deepspeed_config \
-    ${hydra_args}
-
-# exit 0
-
-# 集群分布式训练
-
-# HOST_FILE="/tmp/"${JobID}                        #生成的hostfile的完整文件名，$JobID调度系统会自动生成
- 
-# echo "${VC_MASTER_HOSTS} slots=${GPU_PER_TASK}" > ${HOST_FILE}
-# echo "${VC_WORKER_HOSTS}" | awk -F ',' -v gpu_num=$GPU_PER_TASK '{for (i=1; i<=NF; i++) print $i" slots="gpu_num}' >> ${HOST_FILE}
-
 # deepspeed \
-#     --node_rank=$RANK \
-#     --master_addr $MASTER_ADDR \
-#     --master_port $MASTER_PORT \
-#     --hostfile $HOST_FILE \
-#     --no_ssh \
+#     --num_nodes 1 \
+#     --num_gpus 8 \
 #     $code_dir/finetune_deepspeed.py \
 #     ++train_config.enable_fsdp=false \
 #     ++train_config.enable_ddp=true \
 #     ++train_config.use_fp16=$use_fp16 \
 #     ++deepspeed_config=$deepspeed_config \
 #     ${hydra_args}
+
+# exit 0
+
+# 集群分布式训练
+
+HOST_FILE="/tmp/"${JobID}                        #生成的hostfile的完整文件名，$JobID调度系统会自动生成
+ 
+echo "${VC_MASTER_HOSTS} slots=${GPU_PER_TASK}" > ${HOST_FILE}
+echo "${VC_WORKER_HOSTS}" | awk -F ',' -v gpu_num=$GPU_PER_TASK '{for (i=1; i<=NF; i++) print $i" slots="gpu_num}' >> ${HOST_FILE}
+
+deepspeed \
+    --node_rank=$RANK \
+    --master_addr $MASTER_ADDR \
+    --master_port $MASTER_PORT \
+    --hostfile $HOST_FILE \
+    --no_ssh \
+    $code_dir/finetune_deepspeed.py \
+    ++train_config.enable_fsdp=false \
+    ++train_config.enable_ddp=true \
+    ++train_config.use_fp16=$use_fp16 \
+    ++deepspeed_config=$deepspeed_config \
+    ${hydra_args}
 
 

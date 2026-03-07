@@ -39,8 +39,8 @@ def read_ppl(path):
 
 
 
-wer_dict = read_wer("exp/20251110-1416-slidespeech-hotenc_asr/aispeech_asr_epoch_32_total_step_400000/decode_slidespeech_asr_test_norm_cer")
-ppl_dict = read_ppl("exp/20251110-1416-slidespeech-hotenc_asr/aispeech_asr_epoch_32_total_step_400000/decode_slidespeech_asr_test_norm_pplcmg10")
+wer_dict = read_wer("exp/20260121-1702-slidespeech-linear/aispeech_asr_epoch_24_total_step_100000/test/decode_slidespeech_asr_test_cer")
+ppl_dict = read_ppl("exp/20260121-1702-slidespeech-linear/aispeech_asr_epoch_24_total_step_100000/test/decode_slidespeech_asr_test_ppl")
 
 # 取交集 utt
 common_utts = sorted(set(wer_dict) & set(ppl_dict))

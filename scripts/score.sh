@@ -1,10 +1,10 @@
-ckpt_path=exp/20260121-1702-slidespeech-linear/aispeech_asr_epoch_24_total_step_100000
+ckpt_path=exp/20260216-1515-slidespeech-ctc/aispeech_asr_epoch_2_total_step_10000
 dataset=slidespeech
 task=asr
 sub_test=test
 test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
 
-decode_log=$ckpt_path/correct_gt/decode_${dataset}_${task}_${sub_test}
+decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
 
 python score/normalize.py ${decode_log}_pred ${decode_log}_norm_pred
 python score/normalize.py ${decode_log}_gt ${decode_log}_norm_gt

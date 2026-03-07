@@ -1,4 +1,4 @@
-ckpt_path=exp/20251128-1422-Chinese-LiPS-lorafalse_hotword_instruct/aispeech_asr_epoch_40_total_step_30000
+ckpt_path=exp/20260121-1702-slidespeech-linear/aispeech_asr_epoch_35_total_step_150000
 dataset=Chinese-LiPS
 task=hotword
 sub_test=test

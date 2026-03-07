@@ -1,7 +1,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
-model_name = "/models/Qwen/Qwen2.5-7B-Instruct"
+model_name = "/models/vicuna-7b-v1.5"
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
@@ -51,7 +51,7 @@ while True:
     # 4. 生成回答
     generated_ids = model.generate(
         **model_inputs,
-        max_new_tokens=200,
+        max_new_tokens=300,
         do_sample=False,
         # temperature=0.7,
         # top_p=0.9

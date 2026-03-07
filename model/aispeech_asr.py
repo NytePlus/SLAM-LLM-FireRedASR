@@ -10,7 +10,7 @@ import logging
 import types
 from typing import List, Optional, Tuple, Union
 
-from transformers import AutoTokenizer, AutoConfig, LlamaForCausalLM
+from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
 
 from peft import PeftModel, LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from wavlm.WavLM import WavLM, WavLMConfig
@@ -131,7 +131,7 @@ def setup_llm(train_config, model_config, **kwargs):
     config.use_cache=use_cache
     config._attn_implementation=model_config.attn_implementation
 
-    model = LlamaForCausalLM.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         model_config.llm_path,
         config=config,
     )
