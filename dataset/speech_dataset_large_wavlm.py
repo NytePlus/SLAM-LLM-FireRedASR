@@ -632,8 +632,7 @@ def get_speech_dataset(dataset_config, tokenizer, split, batching_strategy="dyna
     if batching_strategy == "dynamic":
         max_frame_length = ds_config.train_max_frame_length if split == "train" else ds_config.eval_max_frame_length
         dataset = MultiTaskDynamicBatchDataset(dataset,partial(window_class, max_frame_length=max_frame_length, ds_rate=ds_config.ds_rate))
-    else:
-        dataset = FixedBatchDataset(dataset, 4)
+
     return dataset
 
     

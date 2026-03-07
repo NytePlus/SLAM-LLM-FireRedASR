@@ -112,7 +112,7 @@ def deepspeed_join(group_join):
         if timeout is not None:
             timeout = timeout._timeout
         else:
-            timeout = datetime.timedelta(seconds=60)
+            timeout = datetime.timedelta(seconds=30)
 
         # NOTE(xcsong): Why we need a new group?
         #   Because Deepspeed has its own group where all the relevant communication

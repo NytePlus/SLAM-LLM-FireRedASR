@@ -68,7 +68,7 @@ def get_dataloader_kwargs(train_config, dataset, tokenizer, mode):
             kwargs["sampler"] = None
             kwargs["batch_size"] = batch_size
             kwargs["shuffle"]=(mode=="train")
-            kwargs["drop_last"] = False
+            kwargs["drop_last"] = True
             kwargs["collate_fn"] = dataset.collator 
             logger.info(f"Using batching strategy: {train_config.batching_strategy}")
         else:
