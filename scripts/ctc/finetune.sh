@@ -77,7 +77,7 @@ else
     exit 1
 fi
 
-output_dir=${code_dir}/exp/$(date +"%Y%m%d-%H%M")-$dataset-lora${use_peft}_${task}_instruct
+output_dir=${EXP_DIR}/$(date +"%Y%m%d-%H%M")-$dataset-lora${use_peft}_${task}_instruct
 hydra_args="
 hydra.run.dir=$output_dir \
 ++model_config.encoder_name=$encoder_name \
@@ -89,7 +89,8 @@ hydra.run.dir=$output_dir \
 ++model_config.llm_path=$llm_path \
 ++model_config.llm_dim=$llm_dim \
 ++model_config.firered_path=$firered_path \
-++model_config.attn_implementation=flash_attention_2 \
+++model_config.attn_implementation=$ATTN_IMPL \
+++model_config.ctc_loss_weight=$CTC_LOSS_WEIGHT \
 ++dataset_config.file=$file \
 ++dataset_config.train_max_frame_length=$train_max_frame_length \
 ++dataset_config.eval_max_frame_length=$eval_max_frame_length \

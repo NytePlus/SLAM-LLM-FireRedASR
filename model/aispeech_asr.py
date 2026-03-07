@@ -198,6 +198,7 @@ def model_factory(train_config, model_config, **kwargs):
         image_encoder=image_encoder,
         image_encoder_projector=image_encoder_projector,
         cif_loss_weight=model_config.cif_loss_weight,
+        ctc_loss_weight=model_config.ctc_loss_weight,
         **kwargs,
     )
     firered_path = model_config.get("firered_path", None)
@@ -467,7 +468,6 @@ class slam_model_asr(torch.nn.Module):
             log_probs = F.log_softmax(model_outputs.logits, dim=-1)
             log_probs = log_probs.transpose(0, 1) # (B, T, V) -> (T, B, V)
             
-            print(self.ctc_loss_weight)
             model_outputs.ctc_loss = self.ctc_loss_weight * masked_ctc_loss(
                 log_probs,
                 transcript_ids,

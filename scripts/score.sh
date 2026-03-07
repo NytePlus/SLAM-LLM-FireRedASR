@@ -1,8 +1,8 @@
-ckpt_path=exp/20260306-2248-slidespeech-qwen-wrong_linear/aispeech_asr_epoch_23_total_step_70000
+ckpt_path=${EXP_DIR}/20260302-1246-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_16_total_step_50000
 dataset=slidespeech
 task=asr
 sub_test=test
-test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
+test_scp_file_path=${DATA_DIR}/${dataset}/${sub_test}_oracle_v1/
 
 decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
 
