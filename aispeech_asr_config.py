@@ -34,6 +34,7 @@ class ModelConfig:
     vl_path: Optional[str] = None
     vl_dim: int = 3584
     cif_loss_weight: Optional[int] = None
+    ctc_loss_weight: Optional[float] = None
 
 @dataclass
 class PeftConfig:

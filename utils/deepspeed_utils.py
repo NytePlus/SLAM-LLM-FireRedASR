@@ -178,7 +178,7 @@ def train(
     if DO_MSPROBE_TEST:
         from msprobe.pytorch import seed_all, PrecisionDebugger
         seed_all()
-        debugger = PrecisionDebugger(config_path="msprobe/config.json")
+        debugger = PrecisionDebugger(config_path=os.environ.get("MSPROBE_CONFIG_DIR", "msprobe/config.json"))
     # Create a gradient scaler for fp16
     # if train_config.use_fp16 and train_config.enable_fsdp:
     #     scaler = ShardedGradScaler()

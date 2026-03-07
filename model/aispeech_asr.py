@@ -271,6 +271,7 @@ class slam_model_asr(torch.nn.Module):
         image_encoder = None,
         image_encoder_projector = None,
         cif_loss_weight = None,
+        ctc_loss_weight = None,
         **kwargs,
     ):
         super().__init__()
@@ -310,8 +311,8 @@ class slam_model_asr(torch.nn.Module):
                 if isinstance(item, nn.LayerNorm):
                     item.forward = types.MethodType(new_forward, item)
         
-        # cif loss weight
         self.cif_loss_weight = cif_loss_weight
+        self.ctc_loss_weight = ctc_loss_weight
 
     # --- TODO: 融入图像模态 ---
     def encode_image(self, image_embed, pixel_values_length, grid_thw, inputs_embeds, attention_mask, labels, input_ids):
@@ -466,7 +467,8 @@ class slam_model_asr(torch.nn.Module):
             log_probs = F.log_softmax(model_outputs.logits, dim=-1)
             log_probs = log_probs.transpose(0, 1) # (B, T, V) -> (T, B, V)
             
-            model_outputs.ctc_loss = 0.3 * masked_ctc_loss(
+            print(self.ctc_loss_weight)
+            model_outputs.ctc_loss = self.ctc_loss_weight * masked_ctc_loss(
                 log_probs,
                 transcript_ids,
                 audio_mask,
