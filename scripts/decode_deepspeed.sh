@@ -1,5 +1,8 @@
 #!/bin/bash
 
+export HCCL_CONNECT_TIMEOUT=3600
+export HCCL_EXEC_TIMEOUT=3600
+
 code_dir=.
 use_peft=false
 use_fp16=true
@@ -7,7 +10,7 @@ freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
 eval_max_frame_length=15000
-ckpt_path=exp/20260124-1908-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_24_total_step_100000
+ckpt_path=exp/20260121-1702-slidespeech-linear/aispeech_asr_epoch_24_total_step_100000
 dataset=slidespeech
 task=asr
 sub_test=test
@@ -59,10 +62,21 @@ else
     exit 1
 fi
 
-projector=kernel-linear
+projector=linear
 
 decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
+
+HOST_FILE="/tmp/"${JobID}                        #生成的hostfile的完整文件名，$JobID调度系统会自动生成
+ 
+echo "${VC_MASTER_HOSTS} slots=${GPU_PER_TASK}" > ${HOST_FILE}
+echo "${VC_WORKER_HOSTS}" | awk -F ',' -v gpu_num=$GPU_PER_TASK '{for (i=1; i<=NF; i++) print $i" slots="gpu_num}' >> ${HOST_FILE}
+
 deepspeed \
+    --node_rank=$RANK \
+    --master_addr $MASTER_ADDR \
+    --master_port $MASTER_PORT \
+    --hostfile $HOST_FILE \
+    --no_ssh \
     $code_dir/inference_batch_deepspeed.py \
     hydra.run.dir=$ckpt_path \
     ++model_config.encoder_name=$encoder_name \
@@ -90,6 +104,7 @@ deepspeed \
     ++train_config.num_workers_dataloader=0 \
     ++train_config.output_dir=$output_dir \
     ++train_config.use_fp16=$use_fp16 \
+    ++train_config.repetition_penalty=1.0 \
     ++decode_log=$decode_log \
     ++ckpt_path=$ckpt_path/pytorch_model.bin \
     ++deepspeed_config=$deepspeed_config \

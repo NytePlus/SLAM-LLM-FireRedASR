@@ -45,7 +45,7 @@ class Paragraph():
 paragraph_dict = {}
 
 class PPL():
-    def __init__(self, model_name = "/models/Qwen2.5-7B"):
+    def __init__(self, model_name = "/models/vicuna-7b-v1.5"):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.device="npu:0"
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -190,11 +190,10 @@ def main(args):
             p = paragraph_dict[utt]
             context, gt = p.part(uttid)
 
-        ref_ppl = ppl.compute_rep_ppl(context, ref_text)
+        ref_ppl = ppl.compute_rep_ppl(context, gt)
         hyp_ppl = ppl.compute_rep_ppl(context, hyp_text)
-        # print('context: ', context)
-        # print('gt: ', gt)
-        # print('ref: ', ref_text)
+        print("=" * 20 + f'context: {context}\ngt: {gt} ppl: {ref_ppl}\nhyp: {hyp_text} ppl: {hyp_ppl}\n')
+        input('')
 
         if math.isnan(ref_ppl) or math.isnan(hyp_ppl):
             ignore_uttid.append(uttid)

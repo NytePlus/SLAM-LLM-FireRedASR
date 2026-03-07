@@ -3,6 +3,7 @@ import random
 from typing import Optional
 import logging
 from contextlib import nullcontext
+import torch.distributed as dist
 
 import hydra
 import logging
@@ -160,34 +161,44 @@ def main(kwargs: DictConfig):
     gt_path = kwargs.get('decode_log') + f"_gt"
     pred_result = ""
     gt_result = ""
-    n, i = 100, 0
-    with open(pred_path, "w") as pred, open(gt_path, "w") as gt:
-        with torch.no_grad():
-            for step, batch in enumerate(tqdm(test_dataloader)):
-                # i += 1
-                # if i > n: break
-                for key in batch.keys():
-                    batch[key] = (
-                        batch[key].to(device).half()
+    n, i = 1, 0
+    all_predictions = []
+    with torch.no_grad():
+        for step, batch in enumerate(tqdm(test_dataloader, disable=(rank != 0))):
+            i += 1
+            # if i > n: break
+            for key in batch.keys():
+                batch[key] = (
+                    batch[key].to(device).half()
+                    if isinstance(batch[key], torch.Tensor)
+                    and batch[key].dtype in [torch.float32, torch.float64]
+                    else (
+                        batch[key].to(device)
                         if isinstance(batch[key], torch.Tensor)
-                        and batch[key].dtype in [torch.float32, torch.float64]
-                        else (
-                            batch[key].to(device)
-                            if isinstance(batch[key], torch.Tensor)
-                            else batch[key]
-                        )
+                        else batch[key]
                     )
-                with autocast(dtype=torch.bfloat16):
-                    model_outputs = model.generate(**batch)
-                # model_outputs = model.generate_beamsearch(**batch)
-                if hasattr(model, 'tokenizer'):
-                    output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
-                else:
-                    output_text = tokenizer.batch_decode(model_outputs, skip_special_tokens=True)
-                for key, text, target in zip(batch["keys"], output_text, batch["targets"]):
-                    text = text.replace('\x00', '').replace('\n', '')
-                    pred.write(key + " " + text.strip() + "\n")
-                    gt.write(key + " " + target + "\n")
+                )
+            with autocast(dtype=torch.bfloat16):
+                model_outputs = model.generate(**batch, **train_config)
+            # model_outputs = model.generate_beamsearch(**batch)
+            if hasattr(model, 'tokenizer'):
+                output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
+            else:
+                output_text = tokenizer.batch_decode(model_outputs, skip_special_tokens=True)
+            for key, text, target in zip(batch["keys"], output_text, batch["targets"]):
+                text = text.replace('\x00', '').replace('\n', '')
+                all_predictions.append({"key": key, "pred": text, "gt": target})
+
+    world_predictions = [None for _ in range(world_size)]
+    dist.all_gather_object(world_predictions, all_predictions)
+
+    if rank == 0:
+        with open(pred_path, "w") as f_pred, open(gt_path, "w") as f_gt:
+            for rank_data in world_predictions:
+                for item in rank_data:
+                    f_pred.write(f"{item['key']} {item['pred']}\n")
+                    f_gt.write(f"{item['key']} {item['gt']}\n")
+        logger.info(f"All results saved to {pred_path}")
 
 if __name__ == "__main__":
     main_hydra()

@@ -99,6 +99,7 @@ class TrainConfig:
     freeze_encoder:bool = False
     freeze_projector:bool = False
     exp_name: str = ""
+    repetition_penalty: float = 3.0
 
 
 @dataclass
@@ -111,6 +112,7 @@ class DataConfig:
     append_info_tasks : List = field(default_factory=lambda: ["hotword"])
     multitask_prompt_path: str = "conf/multiprompt.jsonl"
     prompt_style: str = "<|im_start|>user\n<speech>{}<|im_end|>\n<|im_start|>assistant\n"
+    # prompt_style: str = "<|im_start|>user\n<speech><image>{}<|im_end|>\n<|im_start|>assistant\n"
     # prompt_style: str = "<speech>USER: {}\n ASSISTANT:"
     cmvn_file: str = "/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/model/FireRedASR-LLM/cmvn.ark"
     file: str = "dataset/speech_dataset_large.py:get_speech_dataset"

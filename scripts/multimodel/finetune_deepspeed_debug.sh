@@ -22,7 +22,7 @@ ckpt_path=exp/20251123-0135-Chinese-LiPS-lorafalse_image_instruct/aispeech_asr_e
 
 use_peft=false # For llm
 use_fp16=true
-freeze_encoder=false
+freeze_encoder=true
 freeze_projector=false
 freeze_llm=true
 

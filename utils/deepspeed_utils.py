@@ -33,7 +33,7 @@ from utils.checkpoint_handler import save_model_checkpoint_deepspeed
 from utils.memory_utils import MemoryTrace, NoTrace
 from torch.utils.data import IterableDataset
 
-import wandb
+# import wandb
 import logging
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,9 @@ def train(
 
     Returns: results dictionary containing average training and validation perplexity and loss
     """
+    from msprobe.pytorch import seed_all, PrecisionDebugger
+    seed_all()
+    debugger = PrecisionDebugger(config_path=os.environ.get("MSPROBE_CONFIG_DIR", "msprobe/config.json"))
     # Create a gradient scaler for fp16
     # if train_config.use_fp16 and train_config.enable_fsdp:
     #     scaler = ShardedGradScaler()
@@ -242,6 +245,7 @@ def train(
                     pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
 
             for step, batch in enumerate(train_dataloader):
+                debugger.start(model)
                 if deepspeed_join(group_join):
                     break
                 
@@ -298,6 +302,7 @@ def train(
                         desc += f" embed_loss: {outputs.embed_loss.detach().item() : .2f} quantity_loss: {outputs.quantity_loss.detach().item() : .2f}"
                     elif train_config.exp_name == 'ctc':
                         desc += f" ctc_loss: {outputs.ctc_loss.detach().item() : .2f}"
+                        writer.add_scalar("train/ctc_loss", outputs.ctc_loss.detach().item(), total_step)
 
                     pbar.set_description(desc)
 
@@ -349,6 +354,8 @@ def train(
                             )
 
                     dist.barrier()
+                debugger.stop()
+                debugger.step()
             if rank == 0:
                 pbar.close()
         # prof.stop()

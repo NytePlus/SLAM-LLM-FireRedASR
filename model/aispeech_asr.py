@@ -162,10 +162,9 @@ def setup_vl(train_config, model_config, **kwargs):
     from transformers import Qwen2VLForConditionalGeneration
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         model_config.vl_path,
-        # device_map="cpu"fc 
     ).visual
     model.eval()
-    image_encoder_projector = Adapter(model_config['vl_dim'], model_config["llm_dim"], downsample_rate=1)
+    image_encoder_projector = EncoderProjectorConcat(model_config['vl_dim'], model_config["llm_dim"], downsample_rate=1)
 
     print_module_size(image_encoder_projector, "image adapter", int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
     print_module_size(model, model_config.vl_name, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
@@ -316,14 +315,27 @@ class slam_model_asr(torch.nn.Module):
 
     # --- TODO: 融入图像模态 ---
     def encode_image(self, image_embed, pixel_values_length, grid_thw, inputs_embeds, attention_mask, labels, input_ids):
-        batch_size, _, _ = image_embed.shape
-        
-        image_encoder_outs = self.image_encoder(image_embed, grid_thw=grid_thw) # (batch * seq_len, vl_dim)
+        # image_embed(batch_size, max_seq_len, vl_dim)
+        chunks = [image_embed[i, :pixel_values_length[i]] for i in range(image_embed.size(0))]
+        image_embed_flat = torch.cat(chunks, dim=0)
+
+        image_encoder_outs = self.image_encoder(image_embed_flat, grid_thw=grid_thw) # (batch * seq_len, vl_dim)
         image_encoder_feature_length = pixel_values_length // 4
 
-        _, vl_dim = image_encoder_outs.shape
-        image_encoder_outs = image_encoder_outs.reshape(batch_size, -1, vl_dim) # (batch, seq_len, vl_dim)
+        max_len = image_encoder_feature_length.max().item()
+        outputs = []
+        start = 0
+        for length in image_encoder_feature_length:
+            length = int(length)
+            end = start + length
+            chunk = image_encoder_outs[start:end]   # (seq_len_i, D)
+            if length < max_len:
+                pad_len = max_len - length
+                chunk = F.pad(chunk, (0, 0, 0, pad_len))
+            outputs.append(chunk)
+            start = end
 
+        image_encoder_outs = torch.stack(outputs, dim=0) 
         image_projector_outs = self.image_encoder_projector(image_encoder_outs) # (batch, seq_len, llm_dim)
 
         # print(f'token length(audio+text|image): {inputs_embeds.shape[1]}|{image_projector_outs.shape[1]}|')
@@ -411,21 +423,18 @@ class slam_model_asr(torch.nn.Module):
             projector_feature_length = encoder_feature_length // self.encoder_projector.ds
         elif type(self.encoder_projector).__name__ in ['CIFAdapter', 'FunasrCIFAdapter', 'FlashCIFAdapter']:
             projector_outs, projector_feature_length, quantity_loss = self.encoder_projector(encoder_outs, encoder_feature_length, transcript_length)
-            # print('CIFAdapter: ', encoder_outs.shape, encoder_feature_length, transcript_length, projector_outs.shape, projector_feature_length)
         
         inputs_embeds = self.llm.get_input_embeddings()(input_ids)
         # print(projector_outs.shape, inputs_embeds.shape) # torch.Size([2, 339, 4096]) torch.Size([2, 153, 4096])
 
-        inputs_embeds, attention_mask, labels, position_ids, input_ids = self._merge_input_ids_with_audio_features(
+        inputs_embeds, attention_mask, labels, position_ids, input_ids, audio_mask = self._merge_input_ids_with_audio_features(
                 projector_outs, projector_feature_length, inputs_embeds, input_ids, attention_mask, labels
             )
         # self.debug_verify_labels(input_ids, attention_mask, self.tokenizer, is_attn_mask=True, )
         # self.debug_verify_labels(input_ids, labels, self.tokenizer, is_attn_mask=False, )
-        # print(inputs_embeds[:, :].norm(dim=-1).to(torch.float32).detach().cpu().numpy().tolist())
-        # input('')
+        # self.debug_verify_labels(input_ids, audio_mask, self.tokenizer, is_attn_mask=True, )
         
         if self.image_encoder is not None:
-            print('image encode')
             inputs_embeds, attention_mask, labels, position_ids = self.encode_image(
                 pixel_values, pixel_values_length, grid_thw, 
                 inputs_embeds, attention_mask, labels, input_ids)
@@ -436,8 +445,9 @@ class slam_model_asr(torch.nn.Module):
                 preds = torch.argmax(model_outputs.logits, -1)
                 acc = compute_accuracy(preds.detach()[:, :-1], labels.detach()[:, 1:], ignore_label=self.tokenizer.default_ignore_token)
                 # vocab_size = self.tokenizer.vocab_size
-                # print('predict: ', self.tokenizer.decode(preds[0, :-1].clamp(0, vocab_size-1)))
-                # print('gt: ', self.tokenizer.decode(labels[0, 1:].clamp(0, vocab_size-1)))
+                # pred_ids, label_ids = preds[0, :-1].clamp(0, vocab_size-1), labels[0, 1:].clamp(0, vocab_size-1)
+                # print(f'predict: {self.tokenizer.decode(pred_ids)} \ngt: {self.tokenizer.decode(label_ids)}\n')
+                # self.debug_verify_labels(pred_ids.unsqueeze(0), audio_mask, self.tokenizer, is_attn_mask=True, )
 
         if experiment_name == "wavprompt":
             transcript_embed = self.llm.get_input_embeddings()(transcript_ids)
@@ -453,14 +463,17 @@ class slam_model_asr(torch.nn.Module):
             model_outputs.quantity_loss = quantity_loss
             model_outputs.loss = model_outputs.loss + self.cif_loss_weight * embed_loss + 0.05 * quantity_loss
         elif experiment_name == "ctc":
-            ctc_loss = nn.CTCLoss(blank=self.tokenizer.pad_token_id, zero_infinity=True)
-            print(f'logits: {model_outputs.logits.shape}, gt: {transcript_ids.shape}, logits_length: {projector_feature_length.shape}, gt_length: {transcript_length.shape}')
-
-            model_outputs.ctc_loss = ctc_loss(
-                model_outputs.logits,
+            log_probs = F.log_softmax(model_outputs.logits, dim=-1)
+            log_probs = log_probs.transpose(0, 1) # (B, T, V) -> (T, B, V)
+            
+            model_outputs.ctc_loss = 0.3 * masked_ctc_loss(
+                log_probs,
                 transcript_ids,
-                projector_feature_length,
-                transcript_length
+                audio_mask,
+                transcript_length,
+                blank=0,
+                reduction="mean",
+                zero_infinity=True
             )
             model_outputs.loss = model_outputs.loss + model_outputs.ctc_loss
 
@@ -490,20 +503,22 @@ class slam_model_asr(torch.nn.Module):
         if type(self.encoder).__name__ == 'WavLM':
             encoder_outs, _ = self.encoder.extract_features(input_features)
             encoder_feature_length = self.encoder.compute_feature_length(input_feature_length)
-            projector_outs = self.encoder_projector(encoder_outs)
 
         elif type(self.encoder).__name__ == 'ConformerEncoder':
             encoder_outs,encoder_feature_length,_ = self.encoder(input_features,input_feature_length) # bs*seq*dim
-            projector_outs = self.encoder_projector(encoder_outs)
 
         elif type(self.encoder).__name__ == 'AudioEncoder':
             encoder_outs = self.encoder(input_features) # bs*seq*dim
-            projector_outs = self.encoder_projector(encoder_outs)
             encoder_feature_length = input_feature_length // 2
 
-        projector_feature_length = encoder_feature_length // self.encoder_projector.ds
+        if type(self.encoder_projector).__name__ in ["EncoderProjectorConcat", "EncoderProjectorCov1d", "KernelLinear"]:
+            projector_outs = self.encoder_projector(encoder_outs)
+            projector_feature_length = encoder_feature_length // self.encoder_projector.ds
+        elif type(self.encoder_projector).__name__ in ['CIFAdapter', 'FunasrCIFAdapter', 'FlashCIFAdapter']:
+            projector_outs, projector_feature_length, quantity_loss = self.encoder_projector(encoder_outs, encoder_feature_length)
+
         inputs_embeds = self.llm.get_input_embeddings()(input_ids)
-        inputs_embeds, attention_mask, labels, position_ids, input_ids = self._merge_input_ids_with_audio_features(
+        inputs_embeds, attention_mask, labels, position_ids, input_ids, _ = self._merge_input_ids_with_audio_features(
                 projector_outs, projector_feature_length, inputs_embeds, input_ids, attention_mask, labels
             )
         # self.debug_verify_labels(input_ids, attention_mask, self.tokenizer, is_attn_mask=True, )
@@ -516,7 +531,7 @@ class slam_model_asr(torch.nn.Module):
             inputs_embeds=inputs_embeds,
             max_new_tokens=kwargs.get("max_new_tokens", 200),
             num_beams=kwargs.get("num_beams", 3),
-            do_sample=kwargs.get("do_sample", False),
+            do_sample=kwargs.get("do_sample", True),
             min_length=kwargs.get("min_length", 1),
             top_p=kwargs.get("top_p", 1.0),
             repetition_penalty=kwargs.get("repetition_penalty", 3.0),
@@ -727,7 +742,7 @@ class slam_model_asr(torch.nn.Module):
         final_attention_mask |= audio_to_overwrite
         position_ids = (final_attention_mask.cumsum(-1) - 1).masked_fill_((final_attention_mask == 0), 1)
 
-        return final_embedding, final_attention_mask, final_labels, position_ids, final_input_ids
+        return final_embedding, final_attention_mask, final_labels, position_ids, final_input_ids, audio_to_overwrite
 
     def _merge_input_ids_with_nontext_features(
             self, 
@@ -887,3 +902,49 @@ class slam_model_asr(torch.nn.Module):
         position_ids = (final_attention_mask.cumsum(-1) - 1).masked_fill_((final_attention_mask == 0), 1)
 
         return final_embedding, final_attention_mask, final_labels, position_ids, final_input_ids
+    
+def masked_ctc_loss(
+    log_probs,                 # (T, B, C)
+    transcript_ids,            # 1D 拼接后的 targets
+    mask,                      # (B, T)  bool
+    target_lengths,            # (B,)
+    blank=0,
+    reduction="mean",
+    zero_infinity=True
+):
+    T, B, C = log_probs.shape
+    device = log_probs.device
+
+    masked_log_probs_list = []
+    input_lengths = []
+
+    for b in range(B):
+        cur_mask = mask[b]  # (T,)
+        cur_lp = log_probs[:, b, :]  # (T, C)
+        cur_lp_masked = cur_lp[cur_mask]
+
+        masked_log_probs_list.append(cur_lp_masked)
+        input_lengths.append(cur_lp_masked.size(0))
+
+    max_len = max(input_lengths)
+    padded = log_probs.new_full(
+        (max_len, B, C),
+        fill_value=float("-inf")
+    )
+
+    for b in range(B):
+        cur_len = input_lengths[b]
+        padded[:cur_len, b, :] = masked_log_probs_list[b]
+
+    input_lengths = torch.tensor(input_lengths, dtype=torch.long, device=device)
+    loss = F.ctc_loss(
+        padded,
+        transcript_ids,
+        input_lengths,
+        target_lengths,
+        blank=blank,
+        reduction=reduction,
+        zero_infinity=zero_infinity
+    )
+
+    return loss

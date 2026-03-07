@@ -26,5 +26,6 @@
             "total_num_steps": 215900
         }
     },
-    "checkpoint_activations": false
+    "checkpoint_activations": false,
+    "steps_per_print": 10000
 }

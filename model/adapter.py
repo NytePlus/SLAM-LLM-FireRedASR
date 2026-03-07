@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
-from funasr.models.bicif_paraformer.cif_predictor import cif
 from .cif import *
 
 class EncoderProjectorConcat(nn.Module):

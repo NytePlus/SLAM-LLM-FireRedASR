@@ -172,13 +172,15 @@ def save_model_checkpoint_deepspeed(model, cfg, checkpoint_name="checkpoint"):
     if int(os.environ["RANK"]) == 0:
         os.makedirs(save_dir, exist_ok=True)
     dist.barrier()
-    # save_full_path = os.path.join(save_dir, "model.pt")
     save_full_path = save_dir
     # if int(os.environ["RANK"]) == 0:
     model.save_checkpoint(save_dir=save_full_path, exclude_frozen_parameters=True)
     dist.barrier()
     if int(os.environ["RANK"]) == 0:
-        convert_zero_checkpoint_to_fp32_state_dict(save_full_path, save_full_path)
+        try:
+            convert_zero_checkpoint_to_fp32_state_dict(save_full_path, save_full_path)
+        except:
+            convert_zero_checkpoint_to_fp32_state_dict(save_full_path, os.path.join(save_dir, "model.pt"))
     logger.info(f"encoder saved at {save_full_path}_model")
     dist.barrier()
       

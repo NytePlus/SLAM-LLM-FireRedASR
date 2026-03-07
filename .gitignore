@@ -68,3 +68,18 @@ Thumbs.db
 # Git itself
 .git/
 !.gitignore  # 确保 .gitignore 本身被跟踪
+
+slm.tar
+run.txt
+run2.txt
+msprobe/dump
+msprobe.zip
+
+.__dpc000800000691a1c700006f41
+
+# 致远一号集群
+termination-log
+runningCount
+device_log/
+failure_analysis_result.json
+global_status.json

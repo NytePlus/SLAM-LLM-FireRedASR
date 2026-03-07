@@ -8,7 +8,6 @@ torch_npu.npu.set_compile_mode(jit_compile=False)
 torch_npu.npu.config.allow_internal_format = False
 
 from omegaconf import DictConfig, OmegaConf
-import wandb
 import deepspeed
 import torch
 import torch_npu

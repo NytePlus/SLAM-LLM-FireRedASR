@@ -3,6 +3,8 @@ from torch.utils.data import Dataset,IterableDataset
 import whisper
 import kaldiio
 import types
+from PIL import Image
+import math
 import re
 import soundfile
 from functools import partial
@@ -19,7 +21,7 @@ import logging
 import torchaudio
 import torchaudio.functional as F
 import torchaudio.compliance.kaldi as kaldi
-from model.asr_feat import ASRFeatExtractor
+from transformers import AutoProcessor
 import logging
 
 
@@ -70,6 +72,11 @@ class MultiTaskDataset(Dataset):
         self.image_processor = None
         self.processor_path = dataset_config.get("image_processor_path")
         self.max_pixels = dataset_config.get("max_pixels", 512 * 512)
+        if self.processor_path:
+            self.image_processor = AutoProcessor.from_pretrained(
+                self.processor_path, 
+                max_pixels=self.max_pixels
+                ).image_processor
 
         # -- wav prompt ---
         self.include_transcript = dataset_config.get("include_transcript")
@@ -159,6 +166,10 @@ class MultiTaskDataset(Dataset):
     def __getitem__(self, idx, verbose=False):
         item = self.current_tasks[idx]
         audio_path = item["path"]
+        
+        DATA_DIR = os.environ.get('DATA_DIR')
+        if DATA_DIR:
+            audio_path = audio_path.replace('/aistor/sjtu/hpc_stor01/home/wangchencheng/data', DATA_DIR)
         key = item["key"]
         if self.dataset_config.lower:
             target = item["target"].lower()
@@ -266,16 +277,6 @@ class MultiTaskDataset(Dataset):
         prompt_ids = torch.tensor(prompt_ids)
 
         if not self.inference_mode:
-            def mark_words(text, words):
-                words = [w.strip() for w in words if w]
-                if not words:
-                    return text
-                words = sorted(set(words), key=len, reverse=True)
-                pattern = r'\b(' + '|'.join(map(re.escape, words)) + r')\b'
-                def repl(match: re.Match) -> str:
-                    return f"**{match.group(0)}**"
-                return re.sub(pattern, repl, text, flags=re.IGNORECASE)
-            target = mark_words(target, task_text_list)
             # print(f'target is: {target}')
             target_ids = self.tokenizer.encode(target)
             target_ids.append(self.tokenizer.eos_token_id)
@@ -299,18 +300,16 @@ class MultiTaskDataset(Dataset):
         })
 
         if task == 'image':
-            from PIL import Image
-            import math
-            image = Image.open(item['image']).convert('RGB')
-    
-            current_pixels = image.width * image.height
-            
-            if current_pixels > self.max_pixels:
-                scale = math.sqrt(self.max_pixels / current_pixels)
-                new_size = (int(image.width * scale), int(image.height * scale))
-                image = image.resize(new_size, Image.Resampling.LANCZOS)
-            
-            result['image'] = image
+            result['image'] = np.zeros((14, 14, 3), dtype=np.uint8)
+            if item['image'] != '':
+                image = Image.open(item['image']).convert('RGB')
+                current_pixels = image.width * image.height
+                
+                if current_pixels > self.max_pixels:
+                    scale = math.sqrt(self.max_pixels / current_pixels)
+                    new_size = (int(image.width * scale), int(image.height * scale))
+                    image = image.resize(new_size, Image.Resampling.LANCZOS)
+                result['image'] = image
             
         if not self.inference_mode:
             labels = copy.deepcopy(input_ids)
@@ -438,6 +437,22 @@ class MultiTaskDataset(Dataset):
                 "input_feature_length":input_feature_length,
         }
 
+        # --- image ---
+        if self.image_processor:
+            pixel_values = []
+            pixel_value_lens = []
+            grid_thw = []
+
+            for s in samples:
+                image_out = self.image_processor(images=s['image'], return_tensors="pt")
+                pixel_values.append(image_out['pixel_values'])
+                pixel_value_lens.append(image_out['pixel_values'].shape[0])
+                grid_thw.append(image_out['image_grid_thw'])
+            result['pixel_values'] = torch.stack([self.pad(p, max(pixel_value_lens), False, padding_style = padding_style)
+                                        for p in pixel_values])
+            result['pixel_values_length'] = torch.stack([torch.tensor(l) for l in pixel_value_lens])
+            result['grid_thw'] = torch.cat(grid_thw)
+
         # --- transcript id ---
         if self.include_transcript:
             transcript_ids_max_length = max([s['transcript_ids'].shape[0] for s in samples])
@@ -447,8 +462,6 @@ class MultiTaskDataset(Dataset):
 
             result["transcript_ids"] = transcript_ids
             result["transcript_length"] = transcript_ids_length
-
-        self.process_samples(samples)
        
         if self.inference_mode:
             result["keys"] = [s['key'] for s in samples]

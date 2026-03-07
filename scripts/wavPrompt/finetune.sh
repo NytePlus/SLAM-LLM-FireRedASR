@@ -3,7 +3,7 @@ export TOKENIZERS_PARALLELISM=false
 export HYDRA_FULL_ERROR=1
 export OMP_NUM_THREADS=1
 export TASK_QUEUE_ENABLE=2
-export ASCEND_LAUNCH_BLOCKING=1
+export ASCEND_LAUNCH_BLOCKING=0
 
 code_dir=.
 dataset=slidespeech

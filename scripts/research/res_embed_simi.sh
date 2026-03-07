@@ -7,7 +7,7 @@ freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
 eval_max_frame_length=15000
-ckpt_path=exp/20260123-1125-slidespeech-lorafalse_asr_instruct/aispeech_asr_epoch_5_total_step_20000
+ckpt_path=exp/20260216-1515-slidespeech-ctc/aispeech_asr_epoch_19_total_step_120000
 dataset=slidespeech
 task=asr
 sub_test=test
@@ -45,7 +45,7 @@ else
 fi
 
 # Choose Projector
-projector=kernel-linear
+projector=linear
 
 
 # Choose LLM

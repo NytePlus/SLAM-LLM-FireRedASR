@@ -519,6 +519,9 @@ class FlashCIFAdapter(nn.Module): # 1.3s/it
         # Project to LLM dim
         outputs = self.linear_out(acoustic_embeds)       # [B, T, llm_dim]
 
+        if transcript_length is None:
+            transcript_length = cif_out_dict['cif_lengths'][0]
+
         return outputs, transcript_length, quantity_loss
 
 def cif_function(
@@ -693,11 +696,11 @@ def cif_function(
                 .scatter(
                     1,
                     feat_lengths.view(B, 1, 1).expand(-1, -1, C),
-                    beta / (
+                    (beta / (
                         tail_weights
                         .masked_fill(~extend_mask, beta)
                         .view(B, 1, 1)
-                        .expand(-1, -1, C)),
+                        .expand(-1, -1, C))).to(output.dtype),
                 )
                 .detach()
             )
