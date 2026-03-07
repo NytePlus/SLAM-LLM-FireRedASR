@@ -54,7 +54,7 @@ fi
 projector=linear
 
 # Choose LLM
-llm_name=Qwen2.5-7B-Instruct
+llm_name=vicuna-7b-v1.5
 if [[ $llm_name == "vicuna-7b-v1.5" ]]
 then
     llm_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
@@ -75,7 +75,7 @@ else
     exit 1
 fi
 
-export PROMPT_STYLE="<|im_start|>user\n<speech><image>{}<|im_end|>\n<|im_start|>assistant\n"
+export PROMPT_STYLE=$'<|im_start|>user\n<speech>{}<|im_end|>\n<|im_start|>assistant\n'
 output_dir=exp/$(date +"%Y%m%d-%H%M")-$dataset-lora${use_peft}_${task}_instruct
 hydra_args="
 hydra.run.dir=$output_dir \

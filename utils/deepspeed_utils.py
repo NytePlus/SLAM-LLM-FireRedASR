@@ -112,7 +112,7 @@ def deepspeed_join(group_join):
         if timeout is not None:
             timeout = timeout._timeout
         else:
-            timeout = 30.0  # 默认 30 秒，可根据需求调整
+            timeout = datetime.timedelta(seconds=60)
 
         # NOTE(xcsong): Why we need a new group?
         #   Because Deepspeed has its own group where all the relevant communication
@@ -232,7 +232,7 @@ def train(
     for epoch in range(train_config.num_epochs):
         dist.barrier()
         group_join = dist.new_group(
-            backend="gloo", timeout=datetime.timedelta(seconds=20))
+            backend="gloo", timeout=datetime.timedelta(seconds=40))
         epoch_start_time = time.perf_counter()
         with NoTrace() as memtrace:  # track the memory usage
             model.train()
