@@ -1,5 +1,8 @@
 #!/bin/bash
 
+export HCCL_CONNECT_TIMEOUT=3600
+export HCCL_EXEC_TIMEOUT=3600
+
 code_dir=.
 use_peft=false
 use_fp16=true
@@ -11,7 +14,7 @@ ckpt_path=${EXP_DIR}/${CKPT_NAME}
 dataset=slidespeech
 task=asr
 sub_test=test
-test_scp_file_path=${DATA_DIR}/${dataset}/${sub_test}_oracle_v1/
+test_scp_file_path=${DATA_DIR}/${dataset}/${sub_test}_oracle_v1/history
 
 deepspeed_config=conf/inference_config.json
 
@@ -61,8 +64,12 @@ fi
 
 projector=linear
 
+export PROMPT_STYLE=$'USER: {}<speech>\n ASSISTANT:'
 decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
+
 deepspeed \
+    --num_nodes 1 \
+    --num_gpus 8 \
     $code_dir/inference_batch_deepspeed.py \
     hydra.run.dir=$ckpt_path \
     ++model_config.encoder_name=$encoder_name \
@@ -74,6 +81,7 @@ deepspeed \
     ++model_config.llm_path=$llm_path \
     ++model_config.llm_dim=$llm_dim \
     ++model_config.firered_path=$firered_path \
+    ++model_config.attn_implementation=flash_attention_2 \
     ++dataset_config.file=$file \
     ++dataset_config.test_scp_file_path=$test_scp_file_path \
     ++dataset_config.inference_mode=true \

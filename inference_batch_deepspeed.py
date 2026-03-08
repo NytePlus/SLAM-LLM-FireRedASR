@@ -14,6 +14,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from tqdm import tqdm
 import deepspeed
 from typing import Optional
+from datetime import timedelta
 from aispeech_asr_config import ModelConfig, TrainConfig, DataConfig, LogConfig
 from utils.model_utils import get_custom_model_factory
 from utils.dataset_utils import get_preprocessed_dataset
@@ -107,6 +108,7 @@ def main(kwargs: DictConfig):
 
     deepspeed.init_distributed(
         dist_backend='hccl',    # 使用NCCL后端（GPU场景）
+        timeout=timedelta(seconds=14400)
     )
 
     if rank == 0:
@@ -166,7 +168,7 @@ def main(kwargs: DictConfig):
     with torch.no_grad():
         for step, batch in enumerate(tqdm(test_dataloader, disable=(rank != 0))):
             i += 1
-            # if i > n: break
+            # if i > rank: break
             for key in batch.keys():
                 batch[key] = (
                     batch[key].to(device).half()
@@ -189,16 +191,35 @@ def main(kwargs: DictConfig):
                 text = text.replace('\x00', '').replace('\n', '')
                 all_predictions.append({"key": key, "pred": text, "gt": target})
 
-    world_predictions = [None for _ in range(world_size)]
-    dist.all_gather_object(world_predictions, all_predictions)
+    local_temp_pred = f"{pred_path}.rank{rank}"
+    local_temp_gt = f"{gt_path}.rank{rank}"
+
+    with open(local_temp_pred, "w", encoding="utf-8") as f_p, \
+         open(local_temp_gt, "w", encoding="utf-8") as f_g:
+        for item in all_predictions:
+            f_p.write(f"{item['key']} {item['pred']}\n")
+            f_g.write(f"{item['key']} {item['gt']}\n")
+    dist.barrier()
 
     if rank == 0:
-        with open(pred_path, "w") as f_pred, open(gt_path, "w") as f_gt:
-            for rank_data in world_predictions:
-                for item in rank_data:
-                    f_pred.write(f"{item['key']} {item['pred']}\n")
-                    f_gt.write(f"{item['key']} {item['gt']}\n")
-        logger.info(f"All results saved to {pred_path}")
+        with open(pred_path, "w", encoding="utf-8") as f_final_p, \
+             open(gt_path, "w", encoding="utf-8") as f_final_g:
+
+            for r in range(world_size):
+                r_pred_file = f"{pred_path}.rank{r}"
+                r_gt_file = f"{gt_path}.rank{r}"
+
+                if os.path.exists(r_pred_file):
+                    with open(r_pred_file, "r") as f_r_p:
+                        f_final_p.write(f_r_p.read())
+                    os.remove(r_pred_file) # 清理临时文件
+
+                if os.path.exists(r_gt_file):
+                    with open(r_gt_file, "r") as f_r_g:
+                        f_final_g.write(f_r_g.read())
+                    os.remove(r_gt_file) # 清理临时文件
+
+        logger.info(f"All results combined and saved to {pred_path}")
 
 if __name__ == "__main__":
     main_hydra()
