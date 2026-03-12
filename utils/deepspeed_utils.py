@@ -2,6 +2,7 @@
 # This software may be used and distributed according to the terms of the Llama 2 Community License Agreement.
 
 import os
+import re
 import time
 import yaml
 from contextlib import nullcontext
@@ -32,6 +33,7 @@ from hydra.core.utils import _flush_loggers, configure_log
 from utils.checkpoint_handler import save_model_checkpoint_deepspeed
 from utils.memory_utils import MemoryTrace, NoTrace
 from torch.utils.data import IterableDataset
+from utils.wenet_compute_cer import compute_wer_simple
 
 # import wandb
 import logging
@@ -481,22 +483,37 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
                     )
                 )
             # Ensure no gradients are computed for this scope to save memory
-            with torch.no_grad():
-                # Forward pass and compute loss
-                with autocast(dtype=torch.bfloat16):  # (Fix:MZY): fix expected scalar type mismatch in norm
-                    outputs, *rest = model.module(**batch)
-                acc = rest[0] if rest else -1
-                loss = outputs.loss
+            if train_config.exp_name == 'cot':
+                with torch.no_grad():
+                    with autocast(dtype=torch.bfloat16):
+                        model_outputs = model.generate(**batch)
+                    output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
+                    labels_text = model.tokenizer.batch_decode(batch['labels'].clamp(min=0), add_special_tokens=False, skip_special_tokens=True)
+                    def clean_text(text):
+                        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+                        text = re.sub(r'[^a-zA-Z0-9\s]', '', text).lower().strip()
+                        return text
+                    wers = [compute_wer_simple(clean_text(o), clean_text(l))[0] for o, l in zip(output_text, labels_text)]
+                    acc = 1.0 - sum(wers) / len(wers) / 100
+                    eval_acc += acc
+                eval_preds.extend(output_text)
+            else:
+                with torch.no_grad():
+                    # Forward pass and compute loss
+                    with autocast(dtype=torch.bfloat16):  # (Fix:MZY): fix expected scalar type mismatch in norm
+                        outputs, *rest = model.module(**batch)
+                    acc = rest[0] if rest else -1
+                    loss = outputs.loss
 
-                eval_loss += loss.detach()
-                eval_acc += acc.detach()
-            # Decode predictions and add to evaluation predictions list
-            preds = torch.argmax(outputs.logits, -1)
-            eval_preds.extend(
-                tokenizer.batch_decode(
-                    preds.detach().cpu().numpy(), skip_special_tokens=True
+                    eval_loss += loss.detach()
+                    eval_acc += acc.detach()
+                # Decode predictions and add to evaluation predictions list
+                preds = torch.argmax(outputs.logits, -1)
+                eval_preds.extend(
+                    tokenizer.batch_decode(
+                        preds.detach().cpu().numpy(), skip_special_tokens=True
+                    )
                 )
-            )
             pbar.update(1)
             pbar.set_description(
                 f"step: {step+1}/{eval_len if eval_len is not None else '' }, eval_loss: {eval_loss.detach().item()/(step+1):.4f}, eval_acc: {eval_acc.detach().item()/(step+1):.4f}"

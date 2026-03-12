@@ -287,6 +287,39 @@ def default_cluster(word):
             return 'Other'
     return unicode_names[0]
 
+def compute_wer_simple(ref_text: str, hyp_text: str, to_char: bool = False):
+    """
+    封装自原始 Calculator 类的 WER 计算函数
+    :param ref_text: 参考文本 (Ground Truth)
+    :param hyp_text: 识别结果 (Hypothesis)
+    :param to_char: 是否按字符计算 (CER)，默认按词计算 (WER)
+    :return: (wer_value, details_dict)
+    """
+    calc = Calculator()
+    
+    # 1. 文本预处理：分词或切分字符
+    if to_char:
+        lab = characterize(ref_text)
+        rec = characterize(hyp_text)
+    else:
+        lab = ref_text.strip().split()
+        rec = hyp_text.strip().split()
+    
+    # 2. 这里的 normalize 可以根据需要传入 ignore_words 等参数
+    lab = normalize(lab, ignore_words=set(), cs=False)
+    rec = normalize(rec, ignore_words=set(), cs=False)
+    
+    if not lab:
+        return 0.0, {"all": 0, "cor": 0, "sub": 0, "del": 0, "ins": 0}
+
+    # 3. 计算编辑距离
+    result = calc.calculate(list(lab), list(rec))
+    
+    # 4. 计算百分比
+    wer = float(result['ins'] + result['sub'] + result['del']) * 100.0 / result['all']
+    
+    return wer, result
+
 
 def usage():
     print(
