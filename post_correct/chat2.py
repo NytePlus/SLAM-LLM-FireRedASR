@@ -23,6 +23,7 @@ class Color:
     GREEN = '\033[92m'
     YELLOW = '\033[93m'
     RED = '\033[91m'
+    LIGHT_GRAY = "\033[90m"
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
     END = '\033[0m'
@@ -60,24 +61,53 @@ while True:
     
     # --- PPL 计算逻辑 ---
     ppl_display = ""
+    top_n_output = ""
     if eval_sentence.strip():
-        # 完整的评估文本 = 基础 Prompt + 评估句
+        # 1. 编码全文本与前缀
         full_eval_text = base_text + eval_sentence
-        
-        # 编码
         inputs = tokenizer(full_eval_text, return_tensors="pt").to(model.device)
         prefix_ids = tokenizer(base_text, return_tensors="pt").input_ids
         prefix_len = prefix_ids.shape[1]
         
-        # 构造 Labels：我们将 prefix 部分设为 -100，这样计算 Loss 时会忽略它们
+        # 2. 构造 Labels (屏蔽前缀)
         labels = inputs.input_ids.clone()
-        labels[:, :prefix_len] = -100 
+        labels[:, :prefix_len] = -100
         
         with torch.no_grad():
             outputs = model(**inputs, labels=labels)
-            loss = outputs.loss # 交叉熵损失
-            ppl = math.exp(loss.item()) # PPL = e^loss
+            loss = outputs.loss
+            ppl = math.exp(loss.item())
             ppl_display = f"{Color.RED}(PPL: {ppl:.2f}){Color.END}"
+            
+            # 3. 提取 Top-N (针对 eval_sentence 部分)
+            logits = outputs.logits # [1, seq_len, vocab_size]
+            # 对齐 Shift: logits[i] 预测的是 input_ids[i+1]
+            # 我们只需要 eval_sentence 对应的部分
+            shift_logits = logits[..., prefix_len-1:-1, :].contiguous()
+            shift_labels = labels[..., prefix_len:].contiguous()
+            
+            # 找到非 mask 的位置进行 topk
+            target_logits = shift_logits[0] # [eval_len, vocab_size]
+            target_ids = shift_labels[0]    # [eval_len]
+            
+            top_k = 3 # 你可以修改展示前几个
+            probs = torch.softmax(target_logits, dim=-1)
+            top_probs, top_indices = torch.topk(probs, k=top_k, dim=-1)
+            
+            # 格式化 Top-N 字符串
+            lines = []
+            for i in range(target_ids.size(0)):
+                actual_token = tokenizer.decode([target_ids[i]])
+                preds = []
+                for j in range(top_k):
+                    p_token = tokenizer.decode([top_indices[i, j]])
+                    p_val = top_probs[i, j].item()
+                    preds.append(f"'{p_token}'({p_val:.1%})")
+                
+                # 拼接：目标词 -> 候选1 / 候选2
+                lines.append(f"  {actual_token} -> {' / '.join(preds)}")
+            
+            top_n_output = f"{Color.LIGHT_GRAY}Top-N Analysis:\n" + "\n".join(lines) + f"{Color.END}"
 
     # --- 生成逻辑 ---
     model_inputs = tokenizer([base_text], return_tensors="pt").to(model.device)
@@ -96,6 +126,8 @@ while True:
 
     # 最终输出显示
     print(f"{ppl_display}]{Color.BOLD}{content_continuation}{Color.END}\n")
+    if top_n_output:
+        print(top_n_output + "\n")
 
 """
 And thank you very much good evening everybody and a warm welcome to our next presentation. My name is Katharina Morlang and together with my colleagues hiker hoods and patrick young, please give me your hands.

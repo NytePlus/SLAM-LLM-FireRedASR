@@ -110,7 +110,7 @@ class DataConfig:
     train_max_frame_length: int = 1500
     ds_rate: int = 8
     eval_max_frame_length: int = 2000
-    append_info_tasks : List = field(default_factory=lambda: ["hotword"])
+    append_info_tasks : List = field(default_factory=lambda: ["hotword", "cot", "history"])
     multitask_prompt_path: str = "conf/multiprompt.jsonl"
     prompt_style: str = os.environ.get('PROMPT_STYLE', "<|im_start|>user\n<speech>{}<|im_end|>\n<|im_start|>assistant\n")
     cmvn_file: str = "/aistor/aispeech/hpc_stor01/home/fangyangui/workingspace/model/FireRedASR-LLM/cmvn.ark"

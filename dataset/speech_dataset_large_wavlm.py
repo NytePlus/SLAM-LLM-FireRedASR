@@ -269,8 +269,6 @@ class MultiTaskDataset(Dataset):
                 task_text = item[task].lower()
             else:
                 task_text = item[task]
-            task_text_list = task_text.split(',')
-            task_text = " ".join(task_text_list)
             prompt = prompt.format(task_text)
         prompt_ids = self.tokenizer.encode(prompt)
         prompt_length = len(prompt_ids)

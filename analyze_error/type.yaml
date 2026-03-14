@@ -1,0 +1,12 @@
+ALL:
+  - "非专有名词 同音/近音词混淆":
+      - "同一个单词但时态单复数等变化（如 wanted->want, apple->apples, recipe->recipies）"
+      - "词义不同的不同单词（如 discrete->discreet, weather->whether）"
+      - "非法单词/拼写错误（如 celery->celiery, recipe->recipy）"
+      - "其他"
+  - "专有名词错误"
+  - "严格字母/缩写组合错误(f:_is_alphabet_error)"
+  - "口语词/语气词/其他常用词丢失"
+  - "多个词语（大于5个词）增添或丢失（如FRUITARIAN -> FRUIT TERRY FRUIT WHERE IS IT, CONUNDRUM BUT EXCELLENT BE LEARNED -> KANNONGRAM）"
+  - "数字/单位格式错误"
+  - "其他"

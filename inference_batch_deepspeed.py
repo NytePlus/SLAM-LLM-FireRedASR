@@ -107,8 +107,7 @@ def main(kwargs: DictConfig):
     logger.info(f"local_rank: {local_rank}, rank: {rank}, world_size: {world_size}")
 
     deepspeed.init_distributed(
-        dist_backend='hccl',    # 使用NCCL后端（GPU场景）
-        timeout=timedelta(seconds=14400)
+        dist_backend='hccl',    # GPU使用NCCL后端
     )
 
     if rank == 0:

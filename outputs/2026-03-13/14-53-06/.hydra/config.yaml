@@ -1,0 +1,12 @@
+model_config:
+  encoder_name: wavlm
+  encoder_path: /aistor/sjtu/hpc_stor01/home/guoyiwei/remote/code/AudioFeatExtraction/wavlm/pretrained/WavLM-Large.pt
+  encoder_dim: 1024
+  encoder_projector: linear
+  encoder_projector_ds_rate: 5
+  llm_name: vicuna-7b-v1.5
+  llm_path: /aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
+  llm_dim: 4096
+ckpt_path: exp/cers/pytorch_model.bin
+train_config:
+  use_fp16: true
