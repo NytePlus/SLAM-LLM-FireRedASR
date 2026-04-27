@@ -35,6 +35,12 @@ class ModelConfig:
     vl_dim: int = 3584
     cif_loss_weight: Optional[int] = None
     ctc_loss_weight: Optional[float] = None
+    attn_distill_weight: float = 0.0
+    attn_distill_layers: Optional[List[int]] = None
+    attn_distill_context_ratio: float = 0.5
+    attn_distill_ignore: str = os.environ.get('DISTILL_IGNORE', "")
+    attn_dropout: float = 0.0
+    label_smoothing: float = 0.0
 
 @dataclass
 class PeftConfig:

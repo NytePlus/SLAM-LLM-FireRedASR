@@ -11,7 +11,7 @@ freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
 eval_max_frame_length=15000
-ckpt_path=exp/history/150k
+ckpt_path=
 dataset=slidespeech
 task=asr
 sub_test=test
@@ -22,7 +22,7 @@ deepspeed_config=conf/inference_config.json
 llm_name=vicuna-7b-v1.5
 if [[ $llm_name == "vicuna-7b-v1.5" ]]
 then
-    llm_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
+    llm_path=/models/AI-ModelScope/vicuna-7b-v1.5
     llm_dim=4096
 elif [[ $llm_name == "Qwen2.5-7B-Instruct" ]]
 then
@@ -76,5 +76,5 @@ python $code_dir/post_correct/chat3.py \
     ++model_config.llm_path=$llm_path \
     ++model_config.llm_dim=$llm_dim \
     ++model_config.attn_implementation=flash_attention_2 \
-    ++ckpt_path=$ckpt_path/pytorch_model.bin \
-    ++train_config.use_fp16=$use_fp16
+    ++train_config.use_fp16=$use_fp16 \
+    # ++ckpt_path=$ckpt_path/pytorch_model.bin \

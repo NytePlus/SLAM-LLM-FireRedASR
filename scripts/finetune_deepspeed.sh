@@ -13,7 +13,7 @@ dev_scp_file_path=/data/${dataset}/dev_oracle_v1
 train_max_frame_length=15000
 eval_max_frame_length=15000
 multitask_prompt_path=conf/multiprompt.jsonl
-ckpt_path=
+ckpt_path=exp/20260306-2248-slidespeech-qwen-linear/aispeech_asr_epoch_23_total_step_70000
 
 use_peft=false # For llm
 use_fp16=true
@@ -29,7 +29,7 @@ deepspeed_config=conf/ds_config.json
 encoder_name=wavlm
 if [[ $encoder_name == "whisper" ]]
 then
-    encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/Whisper/medium.pt
+    encoder_ckpt_path=/models/AI-ModelScope/vicuna-7b-v1.5
     mel_size=80 
     encoder_dim=1024
     file=dataset/speech_dataset_large_whisper.py:get_speech_dataset
@@ -54,7 +54,7 @@ fi
 projector=linear
 
 # Choose LLM
-llm_name=vicuna-7b-v1.5
+llm_name=Qwen2.5-7B-Instruct
 if [[ $llm_name == "vicuna-7b-v1.5" ]]
 then
     llm_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/vicuna-7b-v1.5
@@ -76,7 +76,7 @@ else
 fi
 
 export PROMPT_STYLE=$'<|im_start|>user\n<speech>{}<|im_end|>\n<|im_start|>assistant\n'
-output_dir=exp/$(date +"%Y%m%d-%H%M")-$dataset-lora${use_peft}_${task}_instruct
+output_dir=exp/$(date +"%Y%m%d-%H%M")-$dataset-$llm_name-$projector
 hydra_args="
 hydra.run.dir=$output_dir \
 ++model_config.encoder_name=$encoder_name \

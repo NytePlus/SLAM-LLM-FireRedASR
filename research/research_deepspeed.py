@@ -4,6 +4,7 @@ from typing import Optional
 import logging
 from contextlib import nullcontext
 
+import numpy as np
 import hydra
 import logging
 from dataclasses import dataclass, field
@@ -20,7 +21,7 @@ from utils.deepspeed_utils import deepspeed_main_wrapper
 
 from research.model_factory import model_factory
 from research.plot import save_heatmap, save_scalar, save_scalar_withstr
-from research.res_utils import find_generated_spans, decode_replace_audios
+from research.res_utils import find_generated_spans, decode_replace_audios, remove_batch_audio_feature
 
 @dataclass
 class RunConfig:
@@ -90,6 +91,84 @@ def compute_coarse_similarity(H, audio_start, audio_length, gen_start, gen_lengt
 
     return h1_mean, h2_mean, cosine_sim, euclidean_dist
 
+
+def save_attn_map(attn_output, keys, encode_feature_length, all_token_ids, tokenizer, model_outputs):
+    audio_lengths = encode_feature_length.detach().cpu().numpy().tolist()
+    token_texts = [
+        decode_replace_audios(token_ids, tokenizer, audio_length)
+        for token_ids, audio_length in zip(all_token_ids, audio_lengths)
+    ]
+    all_attention_masks = model_outputs.attention_mask # 形状如: torch.Size([batch, heads, seq, seq])
+    all_labels = model_outputs.labels
+    audio_masks = model_outputs.audio_mask
+    
+    # 提前为 Batch 中的每个样本计算 C, A, T 的边界位置
+    batch_boundaries = []
+    for b in range(len(all_token_ids)):
+        mask_attn = all_attention_masks[b].bool()
+        lbl = all_labels[b]
+        mask_audio = audio_masks[b].bool()
+        
+        # 构建一个与序列等长的数组记录类别: 0=Pad, 1=Context(C), 2=Audio(A), 3=Target(T)
+        seq_len = mask_attn.shape[0]
+        categories = np.zeros(seq_len, dtype=int)
+        
+        m_t = mask_attn & (lbl != tokenizer.default_ignore_token)
+        m_a = mask_attn & mask_audio
+        m_c = mask_attn & (lbl == tokenizer.default_ignore_token) & (~mask_audio)
+        
+        categories[m_c.cpu().numpy()] = 1
+        categories[m_a.cpu().numpy()] = 2
+        categories[m_t.cpu().numpy()] = 3
+        
+        # 寻找类别发生切换的索引点（即分界线）
+        bounds = []
+        for j in range(1, seq_len):
+            # 如果前后 Token 类别不同，且都不是 Padding (0)，说明遇到了 C/A/T 的交界线
+            if categories[j] != categories[j-1] and categories[j] != 0 and categories[j-1] != 0:
+                bounds.append(j)
+        batch_boundaries.append(bounds)
+
+    attn_map_list = model_outputs.attentions
+    for layer, attn_maps in enumerate(attn_map_list):
+        if attn_maps is None:
+            continue
+        # 将 bounds 也加入 zip 中遍历
+        for i, (key, attn_map, token_text, bounds) in enumerate(zip(keys, attn_maps, token_texts, batch_boundaries)):
+            key_dir = os.path.join(attn_output, key)
+            os.makedirs(key_dir, exist_ok=True)
+            head_dir = os.path.join(key_dir, str(layer))
+            os.makedirs(head_dir, exist_ok=True)
+
+            save_path = os.path.join(head_dir, f'attn_all_max.png')
+            if os.path.exists(save_path):
+                continue
+            
+            # 提取最大值 heatmap
+            matrix = attn_map.max(dim=0).values.cpu().detach().to(torch.float32).numpy()
+            
+            # 调用 save_heatmap，并新增 boundaries 参数
+            save_heatmap(
+                matrix=matrix, 
+                save_path=save_path,
+                x_labels=token_text,
+                y_labels=token_text,
+                boundaries=bounds
+            )
+            print(f'save to {save_path}')
+            # for head_i, attn_map in enumerate(attn_map):
+            #     save_path=os.path.join(head_dir, f'attn_{head_i}.png')
+            #     if os.path.exists(save_path):
+            #         continue
+            #     save_heatmap(
+            #         matrix=attn_map.cpu().detach().to(torch.float32).numpy(), 
+            #         save_path=save_path,
+            #         x_labels=token_text,
+            #         y_labels=token_text
+            #     )
+            #     print(f'save to {save_path}')
+            
+    return token_texts
 
 def main(kwargs: DictConfig):
     # Update the configuration for the training and sharding process
@@ -189,13 +268,17 @@ def main(kwargs: DictConfig):
         )
     
     autocast = torch.npu.amp.autocast if train_config.use_fp16 else nullcontext
+    test_keys = os.getenv("TEST_KEYS", "")
+    test_key_list = [u.strip() for u in test_keys.split(",") if u.strip()]
 
     output_dir = kwargs.get('decode_log')
     attn_output = os.path.join(output_dir, 'attention_maps')
+    attn_output_wo_audio = os.path.join(output_dir, 'attention_maps_wo_audio')
     norm_output = os.path.join(output_dir, 'hidden_norm')
     sim_output = os.path.join(output_dir, 'coarse sim')
     wavlmout_output = os.path.join(output_dir, 'wavlm_output')
     os.makedirs(attn_output, exist_ok=True)
+    os.makedirs(attn_output_wo_audio, exist_ok=True)
     os.makedirs(norm_output, exist_ok=True)
     os.makedirs(sim_output, exist_ok=True)
     os.makedirs(wavlmout_output, exist_ok=True)
@@ -203,8 +286,10 @@ def main(kwargs: DictConfig):
     with torch.no_grad():
         for step, (batch_key, batch) in tqdm(enumerate(zip(key_dataloader, train_dataloader))):
             i += 1
-            if i > n: break
+            # if i > n: break
             keys = batch_key['keys']
+            if test_key_list and keys[0] not in test_key_list:
+                continue
             for key in batch.keys():
                 batch[key] = (
                     batch[key].to(device).half()
@@ -217,9 +302,18 @@ def main(kwargs: DictConfig):
                     )
                 )
             with autocast(dtype=torch.bfloat16):
-                model_outputs, _ = model(**batch)
+                model_outputs, _ = model(**batch, experiment_name=train_config.exp_name)
                 encoder_outs, _ = model.encoder.extract_features(batch['input_features'])
                 encode_feature_length = model.encoder.compute_feature_length(batch['input_feature_length']) // model.encoder_projector.ds
+
+            import copy
+            batch_wo_audio = remove_batch_audio_feature(batch.copy(), model.tokenizer.default_speech_token)
+            with autocast(dtype=torch.bfloat16):
+                model_outputs_wo_audio = model.llm(input_ids=batch_wo_audio['input_ids'], attention_mask=batch_wo_audio['attention_mask'], labels=batch_wo_audio['labels'])
+                model_outputs_wo_audio.attention_mask = batch_wo_audio['attention_mask']
+                model_outputs_wo_audio.labels = batch_wo_audio['labels']
+                model_outputs_wo_audio.audio_mask = torch.zeros_like(batch_wo_audio['attention_mask'])
+                encode_feature_length_wo_audio = batch_wo_audio['input_feature_length'] * 0
 
             # --- wavlm output ---
             for b, key in enumerate(keys):
@@ -238,28 +332,16 @@ def main(kwargs: DictConfig):
                 )
 
             # --- attention map ---
-            audio_lengths = encode_feature_length.detach().cpu().numpy().tolist()
-            all_token_ids = batch['input_ids']
-            token_texts = [
-                decode_replace_audios(token_ids, model.tokenizer, audio_length)
-                for token_ids, audio_length in zip(all_token_ids, audio_lengths)
-            ]
-            attn_map_list = model_outputs.attentions # torch.Size([1, 32, 357, 357])
-            for layer, attn_maps in enumerate(attn_map_list):
-                if attn_maps is None:
-                    continue
-                for i, (key, attn_map, token_text) in enumerate(zip(keys, attn_maps, token_texts)):
-                    save_path=os.path.join(attn_output, f'attn_{key}_{layer}.png')
-                    if os.path.exists(save_path):
-                        continue
-                    save_heatmap(
-                        matrix=attn_map[0].cpu().detach().to(torch.float32).numpy(), 
-                        save_path=save_path,
-                        x_labels=token_text,
-                        y_labels=token_text
-                    )
-                    print(f'save to attn_{key}_{layer}.png')
-                    
+            token_texts = save_attn_map(attn_output, keys, encode_feature_length, batch['input_ids'], model.tokenizer, model_outputs)
+            token_texts_wo_audio = save_attn_map(attn_output_wo_audio, keys, encode_feature_length_wo_audio, batch_wo_audio['input_ids'], model.tokenizer, model_outputs_wo_audio)
+       
+            # --- ctx ratio ---
+            print(model_outputs.distill_attn_loss)
+            print(model_outputs.pred_ctx_ratio.shape, model_outputs.true_ctx_ratio.shape)
+            for layer, (pred, true) in enumerate(zip(model_outputs.pred_ctx_ratio, model_outputs.true_ctx_ratio)):
+                print(f'Layer {layer}: \npred {pred}, \ntrue {true}')
+            input('')
+            
             # --- 粗粒度跨模态相似度 ---
             speech_token_id = tokenizer.default_speech_token
             batch_size = batch['input_ids'].shape[0]
@@ -269,20 +351,20 @@ def main(kwargs: DictConfig):
 
             hiddens = model_outputs.hidden_states # torch.Size([1, 357, 4096])
             cos_sims, enc_dist = {}, {}
-            for layer, hidden in enumerate(hiddens):
-                for key, audio_start, audio_length, gen_start, gen_length in zip(keys, audio_starts, audio_lengths, gen_starts, gen_lengths):
-                    h1_mean, h2_mean, cos_sim, euc_dist = compute_coarse_similarity(hidden, audio_start, audio_length, gen_start, gen_length)
-                    if cos_sims.get(key) is None:
-                        cos_sims[key] = []
-                    cos_sims[key].append(cos_sim)
-                    if enc_dist.get(key) is None:
-                        enc_dist[key] = []
-                    enc_dist[key].append(euc_dist)
-            for key in keys:
-                save_path = os.path.join(sim_output, key)
-                if not os.path.exists(save_path):
-                    save_scalar(save_path, cos_sims[key], "cosine similarity")
-                    save_scalar(save_path, enc_dist[key], "enc distance")
+            # for layer, hidden in enumerate(hiddens):
+            #     for key, audio_start, audio_length, gen_start, gen_length in zip(keys, audio_starts, audio_lengths, gen_starts, gen_lengths):
+            #         h1_mean, h2_mean, cos_sim, euc_dist = compute_coarse_similarity(hidden, audio_start, audio_length, gen_start, gen_length)
+            #         if cos_sims.get(key) is None:
+            #             cos_sims[key] = []
+            #         cos_sims[key].append(cos_sim)
+            #         if enc_dist.get(key) is None:
+            #             enc_dist[key] = []
+            #         enc_dist[key].append(euc_dist)
+            # for key in keys:
+            #     save_path = os.path.join(sim_output, key)
+            #     if not os.path.exists(save_path):
+            #         save_scalar(save_path, cos_sims[key], "cosine similarity")
+            #         save_scalar(save_path, enc_dist[key], "enc distance")
 
             # --- 嵌入空间大小 ---
             for layer, hidden in enumerate(hiddens):

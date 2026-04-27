@@ -1,5 +1,13 @@
 #!/bin/bash
 
+export HCCL_CONNECT_TIMEOUT=3600
+export HCCL_EXEC_TIMEOUT=3600
+
+DATA_DIR=/data 
+MODEL_DIR=/models 
+EXP_DIR=exp 
+ATTN_IMPL=flash_attention_2
+
 code_dir=.
 use_peft=false
 use_fp16=true
@@ -7,20 +15,35 @@ freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
 eval_max_frame_length=15000
-ckpt_path=exp/20260123-1125-slidespeech-kernel-linear/aispeech_asr_epoch_24_total_step_100000
+ckpt_path=exp/ctc_distill+dropout-vicuna-7b-v1.5-linear-20260416-2005-slidespeech/aispeech_asr_epoch_10_total_step_30000
 dataset=slidespeech
 task=asr
 sub_test=test
-test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
-
-export LOCAL_RANK=0
-export RANK=0
-export WORLD_SIZE=1
-export ASCEND_RT_VISIBLE_DEVICES=0
+test_scp_file_path=${DATA_DIR}/${dataset}/${sub_test}_oracle_v1/history
 
 deepspeed_config=conf/inference_config.json
 
-# Choose Encoder
+llm_name=vicuna-7b-v1.5
+if [[ $llm_name == "vicuna-7b-v1.5" ]]
+then
+    llm_path=/models/vicuna-7b-v1.5
+    llm_dim=4096
+elif [[ $llm_name == "Qwen2.5-7B-Instruct" ]]
+then
+    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-7B-Instruct
+    llm_dim=3584 
+elif [[ $llm_name == "Qwen2-7B" ]]
+then
+    llm_path=
+    llm_dim=3584 
+elif [[ $llm_name == "Qwen2.5-1.5B-Instruct" ]]
+then
+    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-1.5B-Instruct
+    llm_dim=3584 
+else
+    exit 1
+fi
+
 encoder_name=wavlm
 if [[ $encoder_name == "whisper" ]]
 then
@@ -44,36 +67,16 @@ else
     exit 1
 fi
 
-# Choose Projector
-projector=kernel-linear
+projector=linear
 
+export PROMPT_STYLE=$'USER: {}<speech>\n Transcript the audio to text. ASSISTANT:'
+# export PROMPT_STYLE=$'<|im_start|>user: {}<speech>\n Transcript the audio to text. \n<|im_start|>assistant\n'
+decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
 
-# Choose LLM
-llm_name=vicuna-7b-v1.5
-if [[ $llm_name == "vicuna-7b-v1.5" ]]
-then
-    llm_path=/models/vicuna-7b-v1.5
-    llm_dim=4096
-elif [[ $llm_name == "Qwen2.5-7B-Instruct" ]]
-then
-    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-7B-Instruct
-    llm_dim=3584 
-elif [[ $llm_name == "Qwen2-7B" ]]
-then
-    llm_path=
-    llm_dim=3584 
-elif [[ $llm_name == "Qwen2.5-1.5B-Instruct" ]]
-then
-    llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-1.5B-Instruct
-    llm_dim=3584 
-else
-    exit 1
-fi
-
-export PROMPT_STYLE=$'USER: <speech>{}\n ASSISTANT:'
-research_log=$ckpt_path/research_${dataset}_${task}_${sub_test}
-deepspeed --master_port=29503\
-    $code_dir/research/research_deepspeed.py \
+deepspeed \
+    --num_nodes 1 \
+    --num_gpus 8 \
+    $code_dir/inference_batch_deepspeed.py \
     hydra.run.dir=$ckpt_path \
     ++model_config.encoder_name=$encoder_name \
     ++model_config.encoder_path=$encoder_ckpt_path \
@@ -84,10 +87,10 @@ deepspeed --master_port=29503\
     ++model_config.llm_path=$llm_path \
     ++model_config.llm_dim=$llm_dim \
     ++model_config.firered_path=$firered_path \
+    ++model_config.attn_implementation=flash_attention_2 \
     ++dataset_config.file=$file \
-    ++dataset_config.train_scp_file_path=$test_scp_file_path \
     ++dataset_config.test_scp_file_path=$test_scp_file_path \
-    ++dataset_config.inference_mode=false \
+    ++dataset_config.inference_mode=true \
     ++dataset_config.eval_max_frame_length=$eval_max_frame_length \
     ++dataset_config.max_audio_length=30 \
     ++train_config.model_name=aispeech_asr \
@@ -95,12 +98,17 @@ deepspeed --master_port=29503\
     ++train_config.freeze_llm=$freeze_llm \
     ++train_config.freeze_encoder=$freeze_encoder \
     ++train_config.freeze_projector=$freeze_projector \
-    ++train_config.batching_strategy=dynamic \
+    ++train_config.batching_strategy=fixed \
+    ++train_config.val_batch_size=1 \
     ++train_config.num_epochs=1 \
     ++train_config.num_workers_dataloader=0 \
     ++train_config.output_dir=$output_dir \
     ++train_config.use_fp16=$use_fp16 \
-    ++decode_log=$research_log \
+    ++train_config.repetition_penalty=3.0 \
+    ++decode_log=$decode_log \
     ++ckpt_path=$ckpt_path/pytorch_model.bin \
     ++deepspeed_config=$deepspeed_config \
 || exit 1
+
+
+python utils/wenet_compute_cer.py --char=1 -v=1 ${decode_log}_gt ${decode_log}_pred > ${decode_log}_cer

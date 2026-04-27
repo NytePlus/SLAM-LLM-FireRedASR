@@ -2,6 +2,7 @@ import re
 import json
 import time
 import yaml
+import random
 import os
 from openai import OpenAI
 from tqdm import tqdm
@@ -10,162 +11,6 @@ from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from score.score import EditDistance, Code
-
-class ASRErrorAgent:
-    def __init__(self, client):
-        self.client = client
-        self.error_taxonomy = {}
-        self.known_types = ["无错误", "专有名词/生僻词错误",]
-        
-        # 统计数据
-        self.total_ref_words = 0  # 全局总词数 (分母)
-        self.total_err_count = 0
-        self.type_metrics = {}    # 各类型错误数: { "类型": 错误总数 }
-
-    def parse_file(self, file_path):
-        """解析原始文本文件，提取 uttid, lab, rec"""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # 使用正则匹配每个数据块
-        pattern = re.compile(
-            r"utt: (?P<uttid>[\w-]+).*?"
-            r"lab: (?P<lab>.*?)\n"
-            r"rec: (?P<rec>.*?)\n", 
-            re.DOTALL
-        )
-        return [m.groupdict() for m in pattern.finditer(content)]
-
-    def get_api_response(self, batch, big_retries=3):
-        original_map = {item['uttid']: item for item in batch}
-        batch_text = ""
-        for item in batch:
-            batch_text += f"ID: {item['uttid']}\nLab: {item['lab']}\nRec: {item['rec']}\n---\n"
-
-        prompt = f"""
-        你是一个语音识别(ASR)分析专家。请对比提供的10条数据，总结具体的错误类型。不要分类为替换、删除、插入错误，而是总结出具体的错误类型，比如“专有名词/生僻词错误”、“同音/近音词混淆”，然后给出相应的数据，以及该数据具体为什么属于此类错误
-        
-        已知类型库(优先从中选择): {self.known_types}
-        
-        要求以 JSON 格式返回结果，结构严格为: {{"结果": [ {{"uttid": "...", "type": "...", "explanation": "..."}}, ... ]}}
-        """
-
-        attempt = 0
-        while True:
-            try:
-                response_str = self.client.chat(prompt + "\n数据：\n" + batch_text)
-                
-                json_str_match = re.search(r'\{.*\}', response_str, re.DOTALL)
-                if not json_str_match:
-                    raise ValueError("未找到 JSON 结构")
-                
-                data = json.loads(json_str_match.group())
-
-                if "结果" not in data or not isinstance(data["结果"], list):
-                    raise ValueError("JSON 缺少 '结果' 字段或格式非列表")
-
-                validated_results = []
-                for entry in data["结果"]:
-                    if not (isinstance(entry, dict) and "uttid" in entry and "type" in entry and "explanation" in entry):
-                        raise ValueError(f"条目格式缺失: {entry}")
-                
-                    uttid = entry["uttid"]
-                    
-                    if uttid in original_map:
-                        entry["lab"] = original_map[uttid]["lab"]
-                        entry["rec"] = original_map[uttid]["rec"]
-                        validated_results.append(entry)
-                        del original_map[uttid]
-                    else:
-                        print(f"警告：API 返回了未知的 uttid: {uttid}，可能产生了幻觉。")
-
-                if len(original_map) > 0:
-                    raise ValueError(f"数据不完整，以下 ID 缺失: {list(original_map.keys())}")
-                return {"结果": validated_results}
-
-            except Exception as e:
-                attempt += 1
-                if attempt < big_retries:
-                    time.sleep(2)
-                else:
-                    print(f"已达到很大重试次数({batch[0]['uttid']}...)")
-                    time.sleep(60)
-        
-    def calculate_errors(self, lab, rec):
-        """利用 EditDistance 计算单条数据的错误总数 (S+D+I)"""
-        ref_tokens = lab.split()
-        hyp_tokens = rec.split()
-        
-        ed = EditDistance()
-        try:
-            result = ed.align(ref_tokens, hyp_tokens)
-            error_count = sum(1 for code in result.codes if code != Code.match)
-            return len(ref_tokens), error_count
-        except Exception as e:
-            print(f"对齐失败: {e}")
-            return len(ref_tokens), 0
-
-    def process(self, file_path, batch_size=10):
-        all_data = self.parse_file(file_path)
-        total = len(all_data)
-        print(f"共加载 {total} 条数据，开始处理...")
-
-        for i in tqdm(range(0, total, batch_size)):
-            batch = all_data[i:i + batch_size]
-            
-            result = self.get_api_response(batch)
-            if result and "结果" in result:
-                for entry in result["结果"]:
-                    err_type = entry["type"]
-                    uttid = entry["uttid"]
-                    explanation = entry["explanation"]
-
-                    ref_count, err_count = self.calculate_errors(entry['lab'], entry['rec'])
-                    self.total_ref_words += ref_count
-                    self.total_err_count += err_count
-                    
-                    if err_type not in self.error_taxonomy:
-                        self.type_metrics[err_type] = 0
-                        self.error_taxonomy[err_type] = []
-                        self.known_types.append(err_type)
-
-                    self.type_metrics[err_type] += err_count
-                        
-                    self.error_taxonomy[err_type].append({
-                        "uttid: ": uttid,
-                        "rec: ": entry['rec'],
-                        "lab: ": entry['lab'],
-                        "explanation: ": explanation,
-                        "error_count": err_count
-                    })
-
-        self.save_report()
-
-    def save_report(self):
-        """
-        保存包含错误贡献统计和详细案例的完整报告
-        """
-        # 1. 构建统计概览 (Summary)
-        report_data = {
-            "overall_stats": {
-                "total_ref_words": self.total_ref_words,
-                "total_errors": sum(self.type_metrics.values()),
-                "total_wer": (sum(self.type_metrics.values()) / self.total_ref_words * 100) if self.total_ref_words > 0 else 0
-            },
-            "type_contributions": {},
-            "details": self.error_taxonomy
-        }
-
-        # 2. 计算每种类型的具体百分比贡献
-        for err_type, count in self.type_metrics.items():
-            contribution_pct = (count / self.total_err_count * 100) if self.total_err_count > 0 else 0
-            report_data["type_contributions"][err_type] = f'{round(contribution_pct, 4)}%'
-
-        # 3. 写入文件
-        with open('asr_error_report.json', 'w', encoding='utf-8') as f:
-            json.dump(report_data, f, ensure_ascii=False, indent=2)
-        
-        print(f"\n[Done] 报告已更新！当前总 WER: {report_data['overall_stats']['total_wer']:.2f}%")
 
 class ApiClient():
     def __init__(self, model_name="gpt-4.1"):
@@ -205,6 +50,8 @@ class ErrorStatic:
     def __init__(self):
         self.block_substitutions = Counter()
         self.total_error_blocks = 0
+        self.block_substitution_err = Counter()
+        self.total_error_count = 0
 
     def update(self, lab, rec):
         ref_tokens = lab.split()
@@ -290,9 +137,21 @@ class ErrorStatic:
         r_out = r_str if r_str.strip() else ""
         h_out = h_str if h_str.strip() else ""
         
+        ref_tokens = r_out.split()
+        hyp_tokens = h_out.split()
+        
+        ed = EditDistance()
+        try:
+            res = ed.align(ref_tokens, hyp_tokens)
+            actual_error_weight = sum(1 for code in res.codes if code != Code.match)
+        except:
+            actual_error_weight = max(len(ref_tokens), len(hyp_tokens))
+
         pair = f"{r_out} -> {h_out}"
         self.block_substitutions[pair] += 1
         self.total_error_blocks += 1
+        self.block_substitution_err[pair] += actual_error_weight
+        self.total_error_count += actual_error_weight
 
     def get_summary(self, top_n=None):
         """
@@ -302,17 +161,23 @@ class ErrorStatic:
         """
         # 获取排序后的错误对
         if top_n:
-            selected_examples = dict(self.block_substitutions.most_common(top_n))
+            raise NotImplementedError()
+            selected_examples = dict(self.block_substitution_err.most_common(top_n))
             subset_count = sum(selected_examples.values())
         else:
-            selected_examples = dict(self.block_substitutions.most_common())
+            count_dict = dict(self.block_substitutions.most_common())
+            err_count_dict = dict(self.block_substitution_err.most_common())
             subset_count = self.total_error_blocks
+            err_count = self.total_error_count
 
         return [{
             "type": "ALL",
             "count": subset_count,
             "rate": "100.00%",
-            "examples": selected_examples
+            "err_count": err_count,
+            "err_rate": "100.00%",
+            "count_dict": count_dict,
+            "err_count_dict": err_count_dict
         }]
 
     def save_to_file(self, filename):
@@ -331,10 +196,24 @@ class ErrorStatic:
             data = json.load(f)
         print(f"[Load] 已从 {filename} 加载数据，包含 {data[0].get('count', 0)} 个错误块")
         return data
-    
-class BlockErrorProcessor(ASRErrorAgent):
+
+class BlockErrorProcessor:
     def __init__(self):
         self.word_stats = ErrorStatic()
+
+    def parse_file(self, file_path):
+        """解析原始文本文件，提取 uttid, lab, rec"""
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # 使用正则匹配每个数据块
+        pattern = re.compile(
+            r"utt: (?P<uttid>[\w-]+).*?"
+            r"lab: (?P<lab>.*?)\n"
+            r"rec: (?P<rec>.*?)\n", 
+            re.DOTALL
+        )
+        return [m.groupdict() for m in pattern.finditer(content)]
 
     def process(self, file_path):
         all_data = self.parse_file(file_path)
@@ -346,10 +225,32 @@ class BlockErrorProcessor(ASRErrorAgent):
 
         self.word_stats.save_to_file("analyze_error/initial_error_data.json")
 
+class HardCaseStatic:
+    def __init__(self):
+        self.hard_case = {}
+        self._lock = Lock()
+
+    def add(self, p):
+        with self._lock:
+            self.hard_case[p] = self.hard_case.get(p, 0) + 1
+
+    def clear(self, p):
+        with self._lock:
+            self.hard_case.pop(p, None)
+
+    def reset(self):
+        with self._lock:
+            self.hard_case = {}
+
+    def get_all(self):
+        with self._lock:
+            return self.hard_case.copy()
+
 class RecursiveErrorAgent:
     def __init__(self, client, config_path="config.yaml"):
         self.client = client
         self.results_lock = Lock()
+        self.hard_case = HardCaseStatic()
         with open(config_path, 'r', encoding='utf-8') as f:
             raw_config = yaml.safe_load(f)
             self.root_key = list(raw_config.keys())[0]
@@ -380,12 +281,15 @@ class RecursiveErrorAgent:
         ref, hyp = pair.split(" -> ")
 
     def process_node(self, node_data, config_list):
-        if not config_list or not node_data["examples"]:
+        if not config_list or not node_data["count_dict"]:
             return [node_data]
 
-        current_examples = node_data["examples"].copy()
+        count_dict = node_data["count_dict"].copy()
+        error_count_dict = node_data["err_count_dict"].copy()
         current_rate_scalar = float(node_data["rate"].strip("%")) / 100
+        current_rate_scalar_err = float(node_data["err_rate"].strip("%")) / 100
         parent_total = node_data["count"]
+        parent_total_err = node_data['err_count']
         
         labels = []
         descriptions = []
@@ -404,17 +308,18 @@ class RecursiveErrorAgent:
             if desc:
                 descriptions.append(f"- {name}: {desc}")
 
-        split_results = {l: {"count": 0, "examples": {}} for l in labels}
+        split_results = {l: {"count": 0, "err_count": 0, "count_dict": {}} for l in labels}
         remaining_examples = {}
 
-        for pair, count in current_examples.items():
+        for pair, count in count_dict.items():
             matched = False
             for label in labels:
                 if label in rule_map:
                     func = getattr(self, rule_map[label], None)
                     if func and func(pair):
                         split_results[label]["count"] += count
-                        split_results[label]["examples"][pair] = count
+                        split_results[label]["err_count"] += error_count_dict[pair]
+                        split_results[label]["count_dict"][pair] = count
                         matched = True
                         break # 匹配到第一个规则即停止
             
@@ -427,12 +332,13 @@ class RecursiveErrorAgent:
             # 如果 YAML 里全是规则且都没匹配上，兜底给最后一个标签或“其他”
             target_labels = llm_labels if llm_labels else labels 
             
-            llm_res = self._llm_classify_batch_parallel(remaining_examples, target_labels, descriptions)
+            llm_res = self._llm_classify_batch_parallel(remaining_examples, error_count_dict, target_labels, descriptions)
             
             # 合并 LLM 结果到 split_results
             for l, res in llm_res.items():
                 split_results[l]["count"] += res["count"]
-                split_results[l]["examples"].update(res["examples"])
+                split_results[l]["err_count"] += res["err_count"]
+                split_results[l]["count_dict"].update(res["examples"])
 
         # 4. 递归处理子节点
         final_sub_nodes = []
@@ -443,17 +349,22 @@ class RecursiveErrorAgent:
                     "type": label,
                     "count": res["count"],
                     "rate": f"{(res['count'] / parent_total * 100 * current_rate_scalar):.2f}%",
-                    "examples": res["examples"]
+                    "err_count": res['err_count'],
+                    "err_rate": f"{(res['err_count'] / parent_total_err * 100 * current_rate_scalar_err):.2f}%",
+                    "count_dict": res["count_dict"],
+                    "err_count_dict": error_count_dict,
                 }
                 if label in sub_configs and sub_configs[label]:
                     final_sub_nodes.extend(self.process_node(child_node, sub_configs[label]))
                 else:
+                    del child_node['err_count_dict']
                     final_sub_nodes.append(child_node)
 
         return final_sub_nodes
 
     def _llm_classify_batch(self, examples, labels, descriptions, batch_size=10):
         """分批请求 LLM，强制要求分类到指定标签，失败则无限重试"""
+        raise NotImplementedError()
         results = {l: {"count": 0, "examples": {}} for l in labels}
         
         desc_text = "\n".join(descriptions)
@@ -471,7 +382,6 @@ class RecursiveErrorAgent:
     
     def _process_single_batch(self, batch, labels, desc_text):
         """处理单个批次的逻辑，包含无限重试"""
-        batch_text = "\n".join([f"{p}" for p, c in batch])
         batch_success = False
         retry_count = 0
 
@@ -488,6 +398,8 @@ class RecursiveErrorAgent:
         
         while not batch_success:
             try:
+                random.shuffle(batch)
+                batch_text = "\n".join([f"{p}" for p, c in batch])
                 retry_warning = "" if retry_count == 0 else f"\n请确保返回的 'type' 必须严格属于：{labels}"
                 # 随着重试次数增加，稍微提高随机性
                 temp = 0.4 if retry_count < 3 else 0.8
@@ -516,9 +428,23 @@ class RecursiveErrorAgent:
                 for item in batch_results:
                     p = fix_llm_pair(item.get("pair"))
                     t = item.get("type")
-                    if p not in [b[0] for b in batch]:
-                        raise ValueError(f"非法Pair '{p}'")
+                    if len(p) > 150: # 大模型对无限重复的句子，复制能力很差
+                        mp = None
+                        for b in batch:
+                            if p[:150] == b[0][:150]:
+                                mp = b[0]
+                                break
+                        if mp is None:
+                            self.hard_case.add(p)
+                            raise ValueError(f"非法Pair '{p}'")
+                        p = mp
+                    else:
+                        if p not in [b[0] for b in batch]:
+                            self.hard_case[p] += 1
+                            self.hard_case.add(p)
+                            raise ValueError(f"非法Pair '{p}'")
                     if t not in labels:
+                        self.hard_case.add(p)
                         raise ValueError(f"标签 '{t}' 不在可选列表")
                     temp_storage.append((p, t))
 
@@ -526,6 +452,7 @@ class RecursiveErrorAgent:
                 processed_pairs = {x[0] for x in temp_storage}
                 for p, _ in batch:
                     if p not in processed_pairs:
+                        self.hard_case.add(p)
                         raise ValueError(f"漏分类: {p}")
 
                 return temp_storage  # 返回成功的分类结果
@@ -533,13 +460,12 @@ class RecursiveErrorAgent:
             except Exception as e:
                 retry_count += 1
                 # 打印信息时带上线程 ID 方便调试
-                print(f"\n失败: {e}, 第 {retry_count} 次尝试...")
+                print(f"失败: {e}, 第 {retry_count} 次尝试...")
                 time.sleep(0.5)
 
-    def _llm_classify_batch_parallel(self, examples, labels, descriptions, batch_size=10, max_workers=20):
-        """多线程并行版本"""
+    def _llm_classify_batch_parallel(self, examples, error_count_dict, labels, descriptions, batch_size=10, max_workers=20):
         # 初始化结果字典
-        final_results = {l: {"count": 0, "examples": {}} for l in labels}
+        final_results = {l: {"count": 0, "err_count": 0, "examples": {}} for l in labels}
         desc_text = "\n".join(descriptions)
         items = list(examples.items())
         
@@ -562,12 +488,13 @@ class RecursiveErrorAgent:
                     with self.results_lock:
                         for p, t in batch_data:
                             final_results[t]["count"] += examples[p]
+                            final_results[t]["err_count"] += error_count_dict[p]
                             final_results[t]["examples"][p] = examples[p]
                             
         return final_results
 
 processor = BlockErrorProcessor()
-processor.process('/aistor/sjtu/hpc_stor01/home/wangchencheng/workspace/SLAM-LLM-FireRedASR/exp/cot/cot_norm_cer')
+processor.process('exp/distill+dropout-Qwen2.5-7B-Instruct-linear-20260412-1644-slidespeech/aispeech_asr_epoch_19_total_step_60000/decode_slidespeech_asr_test_norm_cer')
 
 initial_data = processor.word_stats.get_summary()
 

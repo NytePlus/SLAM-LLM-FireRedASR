@@ -7,11 +7,11 @@ freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
 eval_max_frame_length=15000
-ckpt_path=exp/20260123-1125-slidespeech-kernel-linear/aispeech_asr_epoch_24_total_step_100000
+ckpt_path=exp/history-qwen-20260328-0046-slidespeech/aispeech_asr_epoch_19_total_step_60000
 dataset=slidespeech
-task=asr
+task=history
 sub_test=test
-test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
+test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/${task}
 
 export LOCAL_RANK=0
 export RANK=0
@@ -45,11 +45,11 @@ else
 fi
 
 # Choose Projector
-projector=kernel-linear
+projector=linear
 
 
 # Choose LLM
-llm_name=vicuna-7b-v1.5
+llm_name=Qwen2.5-7B-Instruct
 if [[ $llm_name == "vicuna-7b-v1.5" ]]
 then
     llm_path=/models/vicuna-7b-v1.5
@@ -70,7 +70,11 @@ else
     exit 1
 fi
 
-export PROMPT_STYLE=$'USER: <speech>{}\n ASSISTANT:'
+# export PROMPT_STYLE=$'USER: {}<speech>\n ASSISTANT:'
+export PROMPT_STYLE=$'<|im_start|>user: {}<speech>\n Transcript the audio to text. <|im_end|>\n<|im_start|>assistant\n'
+# export PROMPT_STYLE=$'<|im_start|>user: {}<speech><|im_end|>\n<|im_start|>assistant\n'
+# export PROMPT_STYLE=$'<|im_start|>{}<speech>'
+export TEST_KEYS="6110-52148-0038,3172-03710-0116"
 research_log=$ckpt_path/research_${dataset}_${task}_${sub_test}
 deepspeed --master_port=29503\
     $code_dir/research/research_deepspeed.py \
@@ -84,6 +88,8 @@ deepspeed --master_port=29503\
     ++model_config.llm_path=$llm_path \
     ++model_config.llm_dim=$llm_dim \
     ++model_config.firered_path=$firered_path \
+    ++model_config.attn_distill_weight=1.0 \
+    ++model_config.attn_distill_context_ratio=1.0 \
     ++dataset_config.file=$file \
     ++dataset_config.train_scp_file_path=$test_scp_file_path \
     ++dataset_config.test_scp_file_path=$test_scp_file_path \
@@ -95,12 +101,12 @@ deepspeed --master_port=29503\
     ++train_config.freeze_llm=$freeze_llm \
     ++train_config.freeze_encoder=$freeze_encoder \
     ++train_config.freeze_projector=$freeze_projector \
-    ++train_config.batching_strategy=dynamic \
     ++train_config.num_epochs=1 \
     ++train_config.num_workers_dataloader=0 \
     ++train_config.output_dir=$output_dir \
     ++train_config.use_fp16=$use_fp16 \
     ++decode_log=$research_log \
-    ++ckpt_path=$ckpt_path/pytorch_model.bin \
     ++deepspeed_config=$deepspeed_config \
+    ++train_config.exp_name=research \
+    ++ckpt_path=$ckpt_path/pytorch_model.bin \
 || exit 1

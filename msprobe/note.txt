@@ -1,5 +1,0 @@
-pip install mindstudio-probe --pre
-
-/aistor/sjtu/hpc_stor01/home/wangchencheng/.local/bin/msprobe config_check -d scripts/finetune_deepspeed.sh -o msprobe/config_check_pack.zip
-
-bash scripts/finetune_deepspeed.sh

@@ -1,10 +1,9 @@
-# hub.szaic.com/sjtu/sjtu_yukai-wangchencheng_slm:v2.3 
 FROM hub.szaic.com/sjtu-base/sjtu_base-pytorch-for-ascend:cann8.2rc1-torch2.6.0-py3.10
 
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
  && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
 
-RUN pip install whisper_normalizer transformers==4.56.0 torchaudio==2.6.0
+RUN pip install whisper_normalizer transformers==5.2.0 torchaudio==2.6.0
 
 ENV TORCH_DEVICE_BACKEND_AUTOLOAD=0
 RUN pip install deepspeed

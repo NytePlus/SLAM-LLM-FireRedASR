@@ -3,6 +3,11 @@
 export HCCL_CONNECT_TIMEOUT=3600
 export HCCL_EXEC_TIMEOUT=3600
 
+DATA_DIR=/data 
+MODEL_DIR=/models 
+EXP_DIR=exp 
+ATTN_IMPL=flash_attention_2
+
 code_dir=.
 use_peft=false
 use_fp16=true
@@ -10,7 +15,7 @@ freeze_encoder=true
 freeze_projector=true
 freeze_llm=true
 eval_max_frame_length=15000
-ckpt_path=${EXP_DIR}/${CKPT_NAME}
+ckpt_path=exp/distill-Qwen2.5-7B-Instruct-linear-20260426-0021-slidespeech/aispeech_asr_epoch_24_total_step_75000
 dataset=slidespeech
 task=asr
 sub_test=test
@@ -18,7 +23,7 @@ test_scp_file_path=${DATA_DIR}/${dataset}/${sub_test}_oracle_v1/history
 
 deepspeed_config=conf/inference_config.json
 
-llm_name=vicuna-7b-v1.5
+llm_name=Qwen2.5-7B-Instruct
 if [[ $llm_name == "vicuna-7b-v1.5" ]]
 then
     llm_path=${MODEL_DIR}/AI-ModelScope/vicuna-7b-v1.5
@@ -35,6 +40,10 @@ elif [[ $llm_name == "Qwen2.5-1.5B-Instruct" ]]
 then
     llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-1.5B-Instruct
     llm_dim=3584 
+elif [[ $llm_name == "Qwen3.5-9B" ]]
+then
+    llm_path=/models/Qwen/Qwen3.5-9B
+    llm_dim=3584 
 else
     exit 1
 fi
@@ -49,7 +58,7 @@ then
     
 elif [[ $encoder_name == "wavlm" ]]
 then
-    encoder_ckpt_path=${MODEL_DIR}/NytePlus/wavlm-large/WavLM-Large.pt
+    encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/guoyiwei/remote/code/AudioFeatExtraction/wavlm/pretrained/WavLM-Large.pt
     encoder_dim=1024
     file=dataset/speech_dataset_large_wavlm.py:get_speech_dataset
 
@@ -64,7 +73,9 @@ fi
 
 projector=linear
 
-export PROMPT_STYLE=$'USER: {}<speech>\n ASSISTANT:'
+# export PROMPT_STYLE=$'USER: {}<speech>\n ASSISTANT:'
+# export PROMPT_STYLE=$'<|im_start|>user: {}<speech>\n Transcript the audio to text. \n<|im_start|>assistant\n'
+export PROMPT_STYLE=$'<|im_start|>user: {}<speech>\n Transcript the audio to text. <|im_end|>\n<|im_start|>assistant\n'
 decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
 
 deepspeed \
@@ -98,7 +109,7 @@ deepspeed \
     ++train_config.num_workers_dataloader=0 \
     ++train_config.output_dir=$output_dir \
     ++train_config.use_fp16=$use_fp16 \
-    ++train_config.repetition_penalty=1.0 \
+    ++train_config.repetition_penalty=3.0 \
     ++decode_log=$decode_log \
     ++ckpt_path=$ckpt_path/pytorch_model.bin \
     ++deepspeed_config=$deepspeed_config \

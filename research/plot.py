@@ -44,7 +44,8 @@ def save_heatmap(
     xlabel="X",
     ylabel="Y",
     title="Heatmap",
-    cmap="magma"
+    cmap="magma",
+    boundaries=None      # [新增] 边界索引列表
 ):
     H, W = matrix.shape
 
@@ -63,6 +64,12 @@ def save_heatmap(
         plt.yticks(np.arange(H), y_labels, fontproperties=font_prop)
     else:
         plt.yticks(np.arange(H))
+
+    if boundaries is not None:
+        for b in boundaries:
+            # 偏移 -0.5 是为了让线条刚好落在两个 Token 对应的色块之间，形成清晰的九宫格/分块边框
+            plt.axvline(x=b - 0.5, color='red', linewidth=1.5, linestyle='--')
+            plt.axhline(y=b - 0.5, color='red', linewidth=1.5, linestyle='--')
 
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)

@@ -17,7 +17,7 @@ from wavlm.WavLM import WavLM, WavLMConfig
 from utils.metric import compute_accuracy
 from utils.config_utils import generate_peft_config
 from utils.model_utils import print_model_size, print_module_size
-from utils.npu_flash_attn import patch_npu_flash_attn
+
 logger = logging.getLogger(__name__)
 
 def extract_variable_length_features(self, x: torch.Tensor):
@@ -130,11 +130,32 @@ def setup_llm(train_config, model_config, **kwargs):
     config = AutoConfig.from_pretrained(model_config.llm_path)
     config.use_cache=use_cache
     config._attn_implementation=model_config.attn_implementation
+    config.attention_dropout=model_config.attn_dropout
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_config.llm_path,
-        config=config,
-    )
+    if train_config.exp_name in {"distill", "ctc_distill"}:
+        if model_config.llm_name == 'Qwen2.5-7B-Instruct':
+            from research.modeling_qwen2 import QwenForResearch
+            model = QwenForResearch.from_pretrained(
+                model_config.llm_path,
+                config=config,
+            )
+        elif model_config.llm_name == 'Qwen3.5-9B':
+            from research.modeling_qwen3_5 import Qwen3_5ForResearch
+            model = Qwen3_5ForResearch.from_pretrained(
+                model_config.llm_path,
+                config=config,
+            )
+        else:
+            from research.modeling_llama import LlamaForResearch
+            model = LlamaForResearch.from_pretrained(
+                model_config.llm_path,
+                config=config,
+            )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_config.llm_path,
+            config=config,
+        )
 
     print_module_size(model, model_config.llm_name, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
 
@@ -315,6 +336,12 @@ class slam_model_asr(torch.nn.Module):
         self.cif_loss_weight = cif_loss_weight
         self.ctc_loss_weight = ctc_loss_weight
 
+        self.attn_distill_weight = float(model_config.attn_distill_weight)
+        self.attn_distill_layers = list(model_config.attn_distill_layers) if model_config.attn_distill_layers is not None else None
+        self.attn_distill_context_ratio = float(model_config.attn_distill_context_ratio)
+        self.attn_distill_ignore = model_config.attn_distill_ignore
+        self.label_smoothing = float(model_config.label_smoothing)
+
     # --- TODO: 融入图像模态 ---
     def encode_image(self, image_embed, pixel_values_length, grid_thw, inputs_embeds, attention_mask, labels, input_ids):
         # image_embed(batch_size, max_seq_len, vl_dim)
@@ -405,7 +432,7 @@ class slam_model_asr(torch.nn.Module):
                 labels: Optional[torch.LongTensor] = None,
                 transcript_ids: Optional[torch.Tensor] = None,
                 transcript_length: Optional[torch.Tensor] = None,
-                experiment_name: str= ""
+                experiment_name: str= "",
                 ):
         
         # print(input_features.shape, input_ids.shape, pixel_values.shape) # torch.Size([2, 217101]) torch.Size([2, 153]) torch.Size([2, 24, 1176])
@@ -420,6 +447,7 @@ class slam_model_asr(torch.nn.Module):
             encoder_outs = self.encoder(input_features) # bs*seq*dim
             encoder_feature_length = input_feature_length // 2
         
+        quantity_loss = None
         if type(self.encoder_projector).__name__ in ["EncoderProjectorConcat", "EncoderProjectorCov1d", "KernelLinear"]:
             projector_outs = self.encoder_projector(encoder_outs)
             projector_feature_length = encoder_feature_length // self.encoder_projector.ds
@@ -429,8 +457,12 @@ class slam_model_asr(torch.nn.Module):
         inputs_embeds = self.llm.get_input_embeddings()(input_ids)
         # print(projector_outs.shape, inputs_embeds.shape) # torch.Size([2, 339, 4096]) torch.Size([2, 153, 4096])
 
+        input_ids_orig = input_ids
+        attention_mask_orig = attention_mask
+        labels_orig = labels
+
         inputs_embeds, attention_mask, labels, position_ids, input_ids, audio_mask = self._merge_input_ids_with_audio_features(
-                projector_outs, projector_feature_length, inputs_embeds, input_ids, attention_mask, labels
+                projector_outs, projector_feature_length, inputs_embeds, input_ids_orig, attention_mask_orig, labels_orig
             )
         # self.debug_verify_labels(input_ids, attention_mask, self.tokenizer, is_attn_mask=True, )
         # self.debug_verify_labels(input_ids, labels, self.tokenizer, is_attn_mask=False, )
@@ -440,7 +472,10 @@ class slam_model_asr(torch.nn.Module):
             inputs_embeds, attention_mask, labels, position_ids = self.encode_image(
                 pixel_values, pixel_values_length, grid_thw, 
                 inputs_embeds, attention_mask, labels, input_ids)
-        model_outputs = self.llm(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels, position_ids=position_ids)
+        use_distill = experiment_name in {"research", "distill", "ctc_distill"}
+        use_ctc = experiment_name in {"ctc", "ctc_distill"}
+        _need_attn = use_distill
+        model_outputs = self.llm(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels, position_ids=position_ids, output_attentions=_need_attn)
         acc = -1
         if self.metric:
             with torch.no_grad():
@@ -464,7 +499,7 @@ class slam_model_asr(torch.nn.Module):
             model_outputs.embed_loss = embed_loss
             model_outputs.quantity_loss = quantity_loss
             model_outputs.loss = model_outputs.loss + self.cif_loss_weight * embed_loss + 0.05 * quantity_loss
-        elif experiment_name == "ctc":
+        elif use_ctc:
             log_probs = F.log_softmax(model_outputs.logits, dim=-1)
             log_probs = log_probs.transpose(0, 1) # (B, T, V) -> (T, B, V)
             
@@ -478,6 +513,169 @@ class slam_model_asr(torch.nn.Module):
                 zero_infinity=True
             )
             model_outputs.loss = model_outputs.loss + model_outputs.ctc_loss
+
+        if use_distill:
+            """
+T：attention_mask==1 && labels != -100 的位置，也就是要算语言建模 loss 的 target token。
+C：attention_mask==1 && labels == -100 且 ~audio_mask 的位置，也就是 prompt/context 文本，不包括音频 token。
+A：attention_mask==1 && audio_mask == True 的位置，也就是插进去的音频 embedding 区间。
+
+所以主分支 attention 是一个大矩阵，块结构像
+        C    A    T
+C     C->C C->A C->T
+A     A->C A->A A->T
+T     T->C T->A T->T
+参考分支没有音频，所以是：
+        C    T
+C     C->C C->T
+T     T->C T->T
+            """
+            _speech_id = self.tokenizer.default_speech_token
+            _ign = int(self.tokenizer.default_ignore_token)
+            B = input_ids_orig.size(0)
+            device = input_ids_orig.device
+
+            if self.label_smoothing > 0:
+                shift_logits = model_outputs.logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                loss_fct = nn.CrossEntropyLoss(ignore_index=_ign, label_smoothing=self.label_smoothing)
+                model_outputs.loss = loss_fct(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                )
+
+            ref_parts = []
+            for b in range(B):
+                keep = input_ids_orig[b] != _speech_id
+                ref_parts.append((
+                    input_ids_orig[b][keep],
+                    attention_mask_orig[b][keep],
+                    labels_orig[b][keep],
+                ))
+            max_ref_len = max(p[0].size(0) for p in ref_parts)
+            ref_input_ids = torch.full(
+                (B, max_ref_len), self.tokenizer.pad_token_id,
+                dtype=input_ids_orig.dtype, device=device)
+            ref_attn_mask = torch.zeros(
+                (B, max_ref_len), dtype=attention_mask_orig.dtype, device=device)
+            ref_labels = torch.full(
+                (B, max_ref_len), _ign, dtype=labels_orig.dtype, device=device)
+            for b in range(B):
+                ids_b, mask_b, lab_b = ref_parts[b]
+                l = ids_b.size(0)
+                off = max_ref_len - l
+                ref_input_ids[b, off:] = ids_b
+                ref_attn_mask[b, off:] = mask_b
+                ref_labels[b, off:] = lab_b
+
+            ref_embeds = self.llm.get_input_embeddings()(ref_input_ids)
+            ref_pos = (ref_attn_mask.long().cumsum(-1) - 1).masked_fill_(
+                (ref_attn_mask == 0), 1)
+            with torch.no_grad():
+                self.llm.eval()
+                ref_out = self.llm(
+                    inputs_embeds=ref_embeds,
+                    attention_mask=ref_attn_mask,
+                    position_ids=ref_pos,
+                    output_attentions=_need_attn,
+                )
+                self.llm.train()
+            
+            assert len(model_outputs.attentions) == len(ref_out.attentions), f'Attention length mismatch: {len(model_outputs.attentions)} != {len(ref_out.attentions)}'
+            
+            if self.attn_distill_ignore:
+                ignore_ids = self.tokenizer.encode(self.attn_distill_ignore, add_special_tokens=False)
+                ignore_tensor = torch.tensor(ignore_ids, dtype=input_ids_orig.dtype, device=device)
+                ignore_len = len(ignore_ids)
+            else:
+                ignore_len = 0
+
+            lay_ids = self.attn_distill_layers
+            if lay_ids is None:
+                lay_ids = range(1, len(model_outputs.attentions))
+            _n = len(model_outputs.attentions)
+            lay_ids = [
+                idx for li in lay_ids
+                if 0 <= (idx := li if li >= 0 else _n + li) < _n
+                and model_outputs.attentions[idx] is not None
+                and ref_out.attentions[idx] is not None
+            ]
+            batch_masks = []
+            for b in range(B):
+                m_t = (attention_mask[b].bool()) & (labels[b] != _ign)
+                r_t = (ref_attn_mask[b].bool()) & (ref_labels[b] != _ign)
+                m_c = (attention_mask[b].bool()) & (labels[b] == _ign) & (~audio_mask[b])
+                r_c = (ref_attn_mask[b].bool()) & (ref_labels[b] == _ign)
+                
+                # 剔除 Ignore 前缀
+                if ignore_len > 0:
+                    seq_m = input_ids_orig[b]
+                    for i in range(seq_m.size(0) - ignore_len + 1):
+                        if (seq_m[i:i+ignore_len] == ignore_tensor).all():
+                            m_c[i:i+ignore_len] = False
+                            assert i == 0
+                            break
+                    
+                    seq_r = ref_input_ids[b]
+                    for i in range(seq_r.size(0) - ignore_len + 1):
+                        if (seq_r[i:i+ignore_len] == ignore_tensor).all():
+                            r_c[i:i+ignore_len] = False
+                            assert i == 0
+                            break
+
+                m_t_idx = m_t.nonzero(as_tuple=True)[0]
+                r_t_idx = r_t.nonzero(as_tuple=True)[0]
+                m_c_idx = m_c.nonzero(as_tuple=True)[0]
+                r_c_idx = r_c.nonzero(as_tuple=True)[0]
+                
+                assert m_t_idx.numel() == r_t_idx.numel()
+                assert m_c_idx.numel() == r_c_idx.numel()
+                
+                batch_masks.append((m_t_idx, r_t_idx, m_c_idx, r_c_idx))
+
+            ctx_ratio = min(max(self.attn_distill_context_ratio, 0.0), 1.0)
+            attn_loss = torch.tensor(0.0, device=device)
+            n_terms = 0
+            pred_ctx_ratio, true_ctx_ratio = [], []
+            
+            for idx in lay_ids:
+                am = model_outputs.attentions[idx] #(num_head, seq_len, seq_len)
+                ar = ref_out.attentions[idx]
+                for b in range(B):
+                    # --- [修改] 3. 直接解包提前算好的索引 ---
+                    m_t_idx, r_t_idx, m_c_idx, r_c_idx = batch_masks[b]
+                    
+                    # sub_m_tc = am[b, :, m_t_idx][:, :, m_c_idx].float().mean(dim=0)
+                    # sub_r_tc = ar[b, :, r_t_idx][:, :, r_c_idx].float().mean(dim=0).detach()
+                    # square_error = F.mse_loss(sub_m_tc, sub_r_tc * ctx_ratio, reduction='none')
+                    # tc_loss = square_error.sum(dim=1).mean() # 语音越长，损失越大
+
+                    sub_m_tc = am[b, :, m_t_idx][:, :, m_c_idx].float()
+                    sub_r_tc = ar[b, :, r_t_idx][:, :, r_c_idx].float().detach()
+                    if experiment_name == "research":
+                        # print(sub_m_tc.shape, sub_r_tc.shape) # torch.Size([28, 13, 279]) torch.Size([28, 13, 279])
+                        pred_ctx_ratio.append(sub_m_tc[:, :, 3:].sum(dim = -1).mean(dim=-1))
+                        true_ctx_ratio.append(sub_r_tc[:, :, 3:].sum(dim = -1).mean(dim=-1))
+                        
+                    square_error = F.mse_loss(sub_m_tc, sub_r_tc * ctx_ratio, reduction='none')
+                    tc_loss = square_error.mean()
+
+                    # 对tt做监督
+                    # sub_m_tt = am[b, :, m_t_idx][:, :, m_t_idx].float().mean(dim=0)
+                    # sub_r_tt = ar[b, :, r_t_idx][:, :, r_t_idx].float().mean(dim=0).detach()
+                    # tt_loss = F.mse_loss(sub_m_tt, sub_r_tt)
+                    attn_loss = attn_loss + tc_loss
+                    n_terms += 1
+            if experiment_name == "research":
+                model_outputs.pred_ctx_ratio = torch.stack(pred_ctx_ratio)
+                model_outputs.true_ctx_ratio = torch.stack(true_ctx_ratio)
+                model_outputs.attention_mask = attention_mask
+                model_outputs.labels = labels
+                model_outputs.audio_mask = audio_mask
+            if n_terms > 0:
+                attn_loss = attn_loss / n_terms
+            model_outputs.distill_attn_loss = self.attn_distill_weight * attn_loss
+            model_outputs.loss = model_outputs.loss + model_outputs.distill_attn_loss
 
         return model_outputs, acc
     

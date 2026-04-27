@@ -5,10 +5,11 @@ export OMP_NUM_THREADS=1
 export TASK_QUEUE_ENABLE=2
 export ASCEND_LAUNCH_BLOCKING=0
 
-DATA_DIR=/data 
-MODEL_DIR=/models 
-EXP_DIR=exp 
-ATTN_IMPL=flash_attention_2
+DATA_DIR=/data
+MODEL_DIR=/models
+EXP_DIR=exp
+ATTN_IMPL=eager
+CTC_LOSS_WEIGHT=0.01
 
 code_dir=.
 dataset=slidespeech
@@ -20,25 +21,23 @@ eval_max_frame_length=15000
 multitask_prompt_path=conf/multiprompt.jsonl
 ckpt_path=
 
-use_peft=false # For llm
+use_peft=false
 use_fp16=true
 freeze_encoder=true
 freeze_projector=false
 freeze_llm=true
 
 firered_path=
-# use absolute path
-deepspeed_config=conf/ds_config_step3w.json
+deepspeed_config=conf/ds_config.json
 
-# Choose Encoder
 encoder_name=wavlm
 if [[ $encoder_name == "whisper" ]]
 then
     encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/xiyu/models/Whisper/medium.pt
-    mel_size=80 
+    mel_size=80
     encoder_dim=1024
     file=dataset/speech_dataset_large_whisper.py:get_speech_dataset
-    
+
 elif [[ $encoder_name == "wavlm" ]]
 then
     encoder_ckpt_path=/aistor/sjtu/hpc_stor01/home/guoyiwei/remote/code/AudioFeatExtraction/wavlm/pretrained/WavLM-Large.pt
@@ -54,12 +53,9 @@ else
     exit 1
 fi
 
-
-# Choose Projector
 projector=linear
 
-# Choose LLM
-llm_name=vicuna-7b-v1.5
+llm_name=Qwen2.5-7B-Instruct
 if [[ $llm_name == "vicuna-7b-v1.5" ]]
 then
     llm_path=/models/vicuna-7b-v1.5
@@ -67,24 +63,29 @@ then
 elif [[ $llm_name == "Qwen2.5-7B-Instruct" ]]
 then
     llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-7B-Instruct
-    llm_dim=3584 
+    llm_dim=3584
 elif [[ $llm_name == "Qwen2-7B" ]]
 then
     llm_path=
-    llm_dim=3584 
+    llm_dim=3584
 elif [[ $llm_name == "Qwen2.5-1.5B-Instruct" ]]
 then
     llm_path=/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-1.5B-Instruct
-    llm_dim=3584 
+    llm_dim=3584
+elif [[ $llm_name == "Qwen3.5-9B" ]]
+then
+    llm_path=/models/Qwen/Qwen3.5-9B
+    llm_dim=4096 
 else
     exit 1
 fi
 
 # export PROMPT_STYLE=$'USER: {}<speech>\n Transcript the audio to text. ASSISTANT:'
+export PROMPT_STYLE=$'<|im_start|>user: {}<speech>\n Transcript the audio to text.\n<|im_start|>assistant\n'
 # export PROMPT_STYLE=$'<|im_start|>user: {}<speech>\n Transcript the audio to text. <|im_end|>\n<|im_start|>assistant\n'
-export PROMPT_STYLE=$'USER: {}<speech>\n Transcript the audio to text, Use Context to improve speech recognition accuracy. But if the context are irrelevant, just ignore them. ASSISTANT:\n'
+# export PROMPT_STYLE=$'USER: {}<speech>\n Transcript the audio to text, Use Context to improve speech recognition accuracy. But if the context are irrelevant, just ignore them. ASSISTANT:\n'
 
-output_dir=${EXP_DIR}/history-$llm_name-$(date +"%Y%m%d-%H%M")-$dataset
+output_dir=${EXP_DIR}/ctc_distill+dropout-$llm_name-$projector-$(date +"%Y%m%d-%H%M")-$dataset
 hydra_args="
 hydra.run.dir=$output_dir \
 ++model_config.encoder_name=$encoder_name \
@@ -97,6 +98,12 @@ hydra.run.dir=$output_dir \
 ++model_config.llm_dim=$llm_dim \
 ++model_config.firered_path=$firered_path \
 ++model_config.attn_implementation=$ATTN_IMPL \
+++model_config.ctc_loss_weight=$CTC_LOSS_WEIGHT \
+++model_config.attn_distill_weight=1.0 \
+++model_config.attn_distill_layers=null \
+++model_config.attn_distill_context_ratio=0.5 \
+++model_config.attn_dropout=0.1 \
+++model_config.label_smoothing=0 \
 ++dataset_config.file=$file \
 ++dataset_config.train_max_frame_length=$train_max_frame_length \
 ++dataset_config.eval_max_frame_length=$eval_max_frame_length \
@@ -105,8 +112,9 @@ hydra.run.dir=$output_dir \
 ++dataset_config.spec_aug=false \
 ++dataset_config.wav_reverb=false \
 ++dataset_config.add_noise=false \
+++dataset_config.include_transcript=true \
 ++train_config.model_name=aispeech_asr \
-++train_config.num_epochs=10 \
+++train_config.num_epochs=25 \
 ++train_config.use_peft=$use_peft \
 ++train_config.freeze_llm=$freeze_llm \
 ++train_config.freeze_encoder=$freeze_encoder \
@@ -114,59 +122,31 @@ hydra.run.dir=$output_dir \
 ++train_config.batching_strategy=fixed \
 ++train_config.batch_size_training=4 \
 ++train_config.val_batch_size=4 \
-++train_config.validation_interval=2500 \
+++train_config.validation_interval=15000 \
 ++train_config.num_workers_dataloader=4 \
 ++train_config.output_dir=$output_dir \
+++train_config.exp_name=ctc_distill \
 ++metric=acc \
 "
 
 if [[ -n "$ckpt_path" ]];then
     hydra_args+=" ++deepspeed_ckpt_path=$ckpt_path"
-    # hydra_args+=" ++ckpt_path=$ckpt_path/pytorch_model.bin"
 fi
 
-# 单机Debug
-# python \
-#      $code_dir/finetune_deepspeed.py \
-#      ++train_config.enable_fsdp=false \
-#      ++train_config.enable_ddp=true \
-#      ++train_config.use_fp16=$use_fp16 \
-#      ++deepspeed_config=$deepspeed_config \
-#      ${hydra_args}
+HOST_FILE="/tmp/"${JobID}
 
-# exit 0
+echo "${VC_MASTER_HOSTS} slots=${GPU_PER_TASK}" > ${HOST_FILE}
+echo "${VC_WORKER_HOSTS}" | awk -F ',' -v gpu_num=$GPU_PER_TASK '{for (i=1; i<=NF; i++) print $i" slots="gpu_num}' >> ${HOST_FILE}
 
-# 调试机多卡训练
 deepspeed \
-    --num_nodes 1 \
-    --num_gpus 8 \
+    --node_rank=$RANK \
+    --master_addr $MASTER_ADDR \
+    --master_port $MASTER_PORT \
+    --hostfile $HOST_FILE \
+    --no_ssh \
     $code_dir/finetune_deepspeed.py \
     ++train_config.enable_fsdp=false \
     ++train_config.enable_ddp=true \
     ++train_config.use_fp16=$use_fp16 \
     ++deepspeed_config=$deepspeed_config \
     ${hydra_args}
-
-# exit 0
-
-# 集群分布式训练
-
-# HOST_FILE="/tmp/"${JobID}                        #生成的hostfile的完整文件名，$JobID调度系统会自动生成
- 
-# echo "${VC_MASTER_HOSTS} slots=${GPU_PER_TASK}" > ${HOST_FILE}
-# echo "${VC_WORKER_HOSTS}" | awk -F ',' -v gpu_num=$GPU_PER_TASK '{for (i=1; i<=NF; i++) print $i" slots="gpu_num}' >> ${HOST_FILE}
-
-# deepspeed \
-#     --node_rank=$RANK \
-#     --master_addr $MASTER_ADDR \
-#     --master_port $MASTER_PORT \
-#     --hostfile $HOST_FILE \
-#     --no_ssh \
-#     $code_dir/finetune_deepspeed.py \
-#     ++train_config.enable_fsdp=false \
-#     ++train_config.enable_ddp=true \
-#     ++train_config.use_fp16=$use_fp16 \
-#     ++deepspeed_config=$deepspeed_config \
-#     ${hydra_args}
-
-

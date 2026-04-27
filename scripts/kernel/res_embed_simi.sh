@@ -70,7 +70,7 @@ else
     exit 1
 fi
 
-export PROMPT_STYLE=$'USER: <speech>{}\n ASSISTANT:'
+export PROMPT_STYLE=$'<|im_start|>user\n<speech>{}<|im_end|>\n<|im_start|>assistant\n'
 research_log=$ckpt_path/research_${dataset}_${task}_${sub_test}
 deepspeed --master_port=29503\
     $code_dir/research/research_deepspeed.py \

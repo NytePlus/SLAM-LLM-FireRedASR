@@ -1,3 +1,6 @@
+EXP_NAME=exp/history-20260328-0046-slidespeech
+EPOCH_LIST="exp/history-20260328-0046-slidespeech/aispeech_asr_epoch_4_total_step_10000 exp/history-20260328-0046-slidespeech/aispeech_asr_epoch_7_total_step_20000 exp/history-20260328-0046-slidespeech/aispeech_asr_epoch_13_total_step_40000"
+DECODE_SCRIPT=decode.sh
 epochs_array=($EPOCH_LIST)
 
 for epoch in "${epochs_array[@]}"; do

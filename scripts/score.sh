@@ -1,8 +1,8 @@
-ckpt_path=${EXP_DIR}/${CKPT_NAME}
+ckpt_path=exp/distill-Qwen2.5-7B-Instruct-linear-20260426-0021-slidespeech/aispeech_asr_epoch_24_total_step_75000
 dataset=slidespeech
 task=asr
 sub_test=test
-test_scp_file_path=${DATA_DIR}/${dataset}/${sub_test}_oracle_v1/
+test_scp_file_path=/data/${dataset}/${sub_test}_oracle_v1/
 
 decode_log=$ckpt_path/decode_${dataset}_${task}_${sub_test}
 

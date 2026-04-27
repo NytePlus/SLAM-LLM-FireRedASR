@@ -8,7 +8,7 @@ model_name = os.environ.get('MODEL_PATH', "/models/vicuna-7b-v1.5")
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     torch_dtype=torch.float16,
-    device_map="npu:6"
+    device_map="npu:0"
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model.eval()

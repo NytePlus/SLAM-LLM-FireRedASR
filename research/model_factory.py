@@ -2,6 +2,7 @@ from model.aispeech_asr import *
 
 from transformers import AutoTokenizer, AutoConfig, LlamaForCausalLM
 from research.modeling_llama import LlamaForResearch
+from research.modeling_qwen2 import QwenForResearch
 
 def setup_reasearch_llm(train_config, model_config, **kwargs):
     use_cache = False if train_config.enable_fsdp or train_config.enable_ddp else None
@@ -10,10 +11,16 @@ def setup_reasearch_llm(train_config, model_config, **kwargs):
     config.use_cache=use_cache
     config._attn_implementation='eager'
 
-    model = LlamaForResearch.from_pretrained(
-        model_config.llm_path,
-        config=config,
-    )
+    if model_config.llm_path == '/models/vicuna-7b-v1.5':
+        model = LlamaForResearch.from_pretrained(
+            model_config.llm_path,
+            config=config,
+        )
+    elif model_config.llm_path == '/aistor/sjtu/hpc_stor01/home/yangyi/model/Qwen2.5-7B-Instruct':
+        model = QwenForResearch.from_pretrained(
+            model_config.llm_path,
+            config=config,
+        )
     return model
 
 def model_factory(train_config, model_config, **kwargs):

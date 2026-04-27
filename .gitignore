@@ -75,6 +75,7 @@ run2.txt
 msprobe/dump
 msprobe.zip
 outputs/
+.hydra/
 
 .__dpc*
 

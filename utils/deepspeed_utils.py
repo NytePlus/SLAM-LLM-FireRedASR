@@ -234,7 +234,7 @@ def train(
     for epoch in range(train_config.num_epochs):
         dist.barrier()
         group_join = dist.new_group(
-            backend="gloo", timeout=datetime.timedelta(seconds=40))
+            backend="gloo", timeout=datetime.timedelta(seconds=120))
         epoch_start_time = time.perf_counter()
         with NoTrace() as memtrace:  # track the memory usage
             model.train()
@@ -305,15 +305,25 @@ def train(
                     
                     if train_config.exp_name == "wavprompt":
                         desc += f" embed_loss: {outputs.embed_loss.detach().item() : .2f} quantity_loss: {outputs.quantity_loss.detach().item() : .2f}"
-                    elif train_config.exp_name == 'ctc':
+                    elif train_config.exp_name in {'ctc', 'ctc_distill'}:
                         desc += f" ctc_loss: {outputs.ctc_loss.detach().item() : .2f}"
                         writer.add_scalar("train/ctc_loss", outputs.ctc_loss.detach().item(), total_step)
+                    if train_config.exp_name in {"distill", "ctc_distill"} and hasattr(outputs, "distill_attn_loss"):
+                        dal = outputs.distill_attn_loss.detach().float().item()
+                        desc += f" distill_attn: {dal : .4f}"
+                        writer.add_scalar("train/distill_attn_loss", dal, total_step)
 
                     pbar.set_description(desc)
 
                 if total_step % train_config.validation_interval == 0 and train_config.run_validation:
                     eval_ppl, eval_epoch_loss, *rest = evaluation(
-                        model, train_config, eval_dataloader, local_rank, tokenizer
+                        model,
+                        train_config,
+                        eval_dataloader,
+                        local_rank,
+                        tokenizer,
+                        writer=writer if rank == 0 else None,
+                        global_step=total_step,
                     )
                     eval_epoch_acc = rest[0] if rest else -1
                     checkpoint_start_time = time.perf_counter()
@@ -414,6 +424,10 @@ def train(
                 f"Epoch {epoch+1}: train_perplexity={train_perplexity.detach().item():.4f}, train_epoch_loss={train_epoch_loss.detach().item():.4f}, epoch time {epoch_end_time}s"
             )
 
+    if rank == 0:
+        writer.flush()
+        writer.close()
+
     avg_epoch_time = sum(epoch_times) / len(epoch_times)
     avg_checkpoint_time = (
         sum(checkpoint_times) / len(checkpoint_times)
@@ -445,7 +459,15 @@ def train(
     return results
 
 # TODO: fix
-def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
+def evaluation(
+    model,
+    train_config,
+    eval_dataloader,
+    local_rank,
+    tokenizer,
+    writer: Optional[SummaryWriter] = None,
+    global_step: Optional[int] = None,
+):
     """
     Evaluates the model on the given dataloader
 
@@ -536,6 +558,12 @@ def evaluation(model, train_config, eval_dataloader, local_rank, tokenizer):
     # Print evaluation metrics
     if local_rank == 0:
         logger.info(f" {eval_ppl=} {eval_epoch_loss=} {eval_epoch_acc=}")
+        if writer is not None:
+            step = int(global_step) if global_step is not None else 0
+            writer.add_scalar("eval/perplexity", eval_ppl.detach().float().item(), step)
+            writer.add_scalar("eval/loss", eval_epoch_loss.detach().float().item(), step)
+            writer.add_scalar("eval/acc", eval_epoch_acc.detach().float().item(), step)
+            writer.flush()
 
     model.train()
     dist.barrier()
