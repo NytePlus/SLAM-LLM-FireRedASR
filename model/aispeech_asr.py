@@ -340,6 +340,7 @@ class slam_model_asr(torch.nn.Module):
         self.attn_distill_layers = list(model_config.attn_distill_layers) if model_config.attn_distill_layers is not None else None
         self.attn_distill_context_ratio = float(model_config.attn_distill_context_ratio)
         self.attn_distill_ignore = model_config.attn_distill_ignore
+        self.align_part = model_config.align_part.split(',')
         self.label_smoothing = float(model_config.label_smoothing)
 
     # --- TODO: 融入图像模态 ---
@@ -650,21 +651,29 @@ T     T->C T->T
                     # square_error = F.mse_loss(sub_m_tc, sub_r_tc * ctx_ratio, reduction='none')
                     # tc_loss = square_error.sum(dim=1).mean() # 语音越长，损失越大
 
-                    sub_m_tc = am[b, :, m_t_idx][:, :, m_c_idx].float()
-                    sub_r_tc = ar[b, :, r_t_idx][:, :, r_c_idx].float().detach()
-                    if experiment_name == "research":
-                        # print(sub_m_tc.shape, sub_r_tc.shape) # torch.Size([28, 13, 279]) torch.Size([28, 13, 279])
-                        pred_ctx_ratio.append(sub_m_tc[:, :, 3:].sum(dim = -1).mean(dim=-1))
-                        true_ctx_ratio.append(sub_r_tc[:, :, 3:].sum(dim = -1).mean(dim=-1))
+                    if 'tc' in self.align_part:
+                        sub_m_tc = am[b, :, m_t_idx][:, :, m_c_idx].float()
+                        sub_r_tc = ar[b, :, r_t_idx][:, :, r_c_idx].float().detach()
+                        if experiment_name == "research":
+                            # print(sub_m_tc.shape, sub_r_tc.shape) # torch.Size([28, 13, 279]) torch.Size([28, 13, 279])
+                            pred_ctx_ratio.append(sub_m_tc[:, :, 3:].sum(dim = -1).mean(dim=-1))
+                            true_ctx_ratio.append(sub_r_tc[:, :, 3:].sum(dim = -1).mean(dim=-1))
                         
-                    square_error = F.mse_loss(sub_m_tc, sub_r_tc * ctx_ratio, reduction='none')
-                    tc_loss = square_error.mean()
+                        tc_loss = F.mse_loss(sub_m_tc, sub_r_tc * ctx_ratio, reduction='none').mean()
+                        attn_loss = attn_loss + tc_loss
 
-                    # 对tt做监督
-                    # sub_m_tt = am[b, :, m_t_idx][:, :, m_t_idx].float().mean(dim=0)
-                    # sub_r_tt = ar[b, :, r_t_idx][:, :, r_t_idx].float().mean(dim=0).detach()
-                    # tt_loss = F.mse_loss(sub_m_tt, sub_r_tt)
-                    attn_loss = attn_loss + tc_loss
+                    if 'tt' in self.align_part:
+                        sub_m_tt = am[b, :, m_t_idx][:, :, m_t_idx].float()
+                        sub_r_tt = ar[b, :, r_t_idx][:, :, r_t_idx].float().detach()
+                        tt_loss = F.mse_loss(sub_m_tt, sub_r_tt, reduction='none').mean()
+                        attn_loss = attn_loss + tt_loss
+
+                    if 'cc' in self.align_part:
+                        sub_m_cc = am[b, :, m_c_idx][:, :, m_c_idx].float()
+                        sub_r_cc = ar[b, :, m_c_idx][:, :, m_c_idx].float().detach()
+                        cc_loss = F.mse_loss(sub_m_cc, sub_r_cc, reduction='none').mean()
+                        attn_loss = attn_loss + cc_loss
+
                     n_terms += 1
             if experiment_name == "research":
                 model_outputs.pred_ctx_ratio = torch.stack(pred_ctx_ratio)
